@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LAN Meeting Collaboration App",
+  "version": "0.1.0",
+  "identifier": "app.lanmeeting.host",
+  "build": {
+    "beforeDevCommand": "npm run dev:host",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build:host",
+    "frontendDist": "../apps/host-ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "LAN Meeting Collaboration App",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "copyright": "Luthfianda Salsabila",
+    "shortDescription": "Local-first LAN meeting collaboration",
+    "longDescription": "Structured meeting notes over a local network, with offline remote submission. No cloud, no external API."
+  }
+}

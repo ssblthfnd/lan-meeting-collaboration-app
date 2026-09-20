@@ -1,0 +1,13 @@
+[package]
+name = "app-core"
+description = "Domain core: actors, authorization, meeting lock rules, audit and versioning policy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }

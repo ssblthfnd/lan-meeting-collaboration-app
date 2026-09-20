@@ -1,0 +1,47 @@
+# ---- Node / frontend ----
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ---- Rust ----
+target/
+**/*.rs.bk
+*.pdb
+
+# ---- Tauri generated ----
+src-tauri/gen/
+src-tauri/target/
+
+# ---- Local databases (never commit meeting data) ----
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+
+# ---- Generated meeting artefacts (contain participant data) ----
+/generated/
+/exports/
+*-submission.json
+*-Meeting-Form.html
+
+# ---- Secrets / local config ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json

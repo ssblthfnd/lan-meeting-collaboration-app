@@ -1,0 +1,13 @@
+[package]
+name = "app-db"
+description = "SQLite access: connection management, migrations and repositories. Source of truth."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+app-core = { workspace = true }
+thiserror = { workspace = true }

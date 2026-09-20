@@ -1,0 +1,16 @@
+[package]
+name = "app-remote"
+description = "Remote form generation and remote submission parsing/validation. Treats input as untrusted."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+app-core = { workspace = true }
+app-db = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

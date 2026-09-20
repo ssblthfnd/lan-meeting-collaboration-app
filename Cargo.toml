@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/app-core",
+  "crates/app-db",
+  "crates/app-server",
+  "crates/app-remote",
+  "crates/app-export",
+  "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+repository = "https://github.com/ssblthfnd/lan-meeting-collaboration-app"
+authors = ["Luthfianda Salsabila <luthfiandasalsabila@gmail.com>"]
+
+[workspace.dependencies]
+# Internal crates
+app-core = { path = "crates/app-core" }
+app-db = { path = "crates/app-db" }
+app-server = { path = "crates/app-server" }
+app-remote = { path = "crates/app-remote" }
+app-export = { path = "crates/app-export" }
+
+# External (skeleton set only - see docs/adr/0006-initial-dependency-set.md)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

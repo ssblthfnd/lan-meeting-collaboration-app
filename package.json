@@ -1,0 +1,37 @@
+{
+  "name": "lan-meeting-collaboration-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first LAN meeting collaboration app (Tauri + React + TypeScript + Rust + SQLite).",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev:host": "npm run dev --workspace @lan-meeting/host-ui",
+    "dev:lan": "npm run dev --workspace @lan-meeting/lan-ui",
+    "dev:remote": "npm run dev --workspace @lan-meeting/remote-form",
+    "build:host": "npm run build --workspace @lan-meeting/host-ui",
+    "build:lan": "npm run build --workspace @lan-meeting/lan-ui",
+    "build:remote": "npm run build --workspace @lan-meeting/remote-form",
+    "build:web": "npm run build:host && npm run build:lan && npm run build:remote",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "check:remote-offline": "node scripts/check-remote-form-offline.mjs",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "fmt:rs": "cargo fmt --all",
+    "fmt:rs:check": "cargo fmt --all -- --check",
+    "lint:rs": "cargo clippy --workspace --all-targets -- -D warnings",
+    "test:rs": "cargo test --workspace",
+    "check": "npm run typecheck && npm run fmt:rs:check && npm run lint:rs && npm run test:rs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "typescript": "^5.7.2"
+  }
+}
