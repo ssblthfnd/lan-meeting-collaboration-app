@@ -25,7 +25,23 @@ app-server = { path = "crates/app-server" }
 app-remote = { path = "crates/app-remote" }
 app-export = { path = "crates/app-export" }
 
-# External (skeleton set only - see docs/adr/0006-initial-dependency-set.md)
+# External (see docs/adr/0006-initial-dependency-set.md)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+
+# Identifiers and time (Phase 1, step 1). UUIDv7 is time-ordered, so a TEXT id
+# also sorts chronologically. jiff carries its own IANA tzdb, which matters on
+# Windows, where the OS ships none (ADR-0010).
+uuid = { version = "1", features = ["v7", "serde"] }
+jiff = { version = "0.2", features = ["serde"] }
+
+# SQLite (Phase 1, step 1). `bundled` compiles SQLite into the binary so there
+# is no system dependency on Windows (ADR-0006).
+rusqlite = { version = "0.37", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.31"
+refinery = { version = "0.9", features = ["rusqlite"] }
+
+# Dev-only
+tempfile = "3"

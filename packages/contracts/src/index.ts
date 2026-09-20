@@ -55,3 +55,93 @@ export type ParticipantClaimStatus =
   /** Every session for this participant is revoked. A Host rejection lands
    *  here too: rejecting a claim revokes its session. */
   | 'REVOKED';
+
+/* -------------------------------------------------------------------------
+ * Identifiers and time
+ *
+ * These mirror the Rust representation established in Phase 1, step 1. The
+ * same 36-character id string and the same fixed-width UTC timestamp cross
+ * every boundary: SQLite column, Tauri command, LAN HTTP body, and remote
+ * submission file. See `docs/adr/0010-datetime-library-jiff.md` and
+ * `docs/adr/0011-identifier-and-storage-formats.md`.
+ *
+ * They are branded string types. A brand costs nothing at runtime - the value
+ * is a plain string in JSON - but it stops a `MeetingId` being passed where a
+ * `ParticipantId` is expected, which is the same guarantee `Id<E>` gives on
+ * the Rust side.
+ *
+ * Nothing here validates. Validation is a backend decision (architecture rules
+ * section 3): a value arriving from a browser or a submission file is
+ * untrusted until Rust has parsed it.
+ * ------------------------------------------------------------------------- */
+
+declare const brand: unique symbol;
+
+/** A string tagged with a compile-time brand. */
+type Branded<T extends string, B extends string> = T & { readonly [brand]: B };
+
+/**
+ * A UUID version 7, canonical lowercase hyphenated form, exactly 36
+ * characters - for example `0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e`.
+ *
+ * Version 7 is time-ordered, so sorting by id is also sorting by creation
+ * time (architecture rules section 26.4).
+ */
+export type Uuid7<B extends string> = Branded<string, B>;
+
+export type MeetingId = Uuid7<'MeetingId'>;
+export type ParticipantId = Uuid7<'ParticipantId'>;
+export type SessionId = Uuid7<'SessionId'>;
+export type NoteId = Uuid7<'NoteId'>;
+export type NoteLinkId = Uuid7<'NoteLinkId'>;
+export type NoteVersionId = Uuid7<'NoteVersionId'>;
+export type AuditLogId = Uuid7<'AuditLogId'>;
+export type RemoteSubmissionId = Uuid7<'RemoteSubmissionId'>;
+
+/**
+ * The stable submission identity minted when a remote form is generated and
+ * carried back inside the submission file (ADR-0008).
+ */
+export type SubmissionId = Uuid7<'SubmissionId'>;
+
+/**
+ * A system timestamp: UTC, RFC 3339, fixed width, always exactly
+ * `YYYY-MM-DDTHH:MM:SS.sssZ` (24 characters).
+ *
+ * The milliseconds are always present even when zero, and the `Z` is always
+ * literal. Both matter: fixed width is what makes string ordering agree with
+ * time ordering, and the `Z` is what makes "this column is UTC" checkable
+ * rather than assumed (PRD section 25.1).
+ */
+export type Iso8601Utc = Branded<string, 'Iso8601Utc'>;
+
+/**
+ * A meeting's calendar date, `YYYY-MM-DD`, with no timezone of its own.
+ *
+ * Meaningless without the meeting's {@link IanaTimeZone}. Never render it in
+ * the reader's local timezone (PRD section 25.2).
+ */
+export type IsoDate = Branded<string, 'IsoDate'>;
+
+/**
+ * A meeting's time of day, `HH:MM:SS`, with no timezone of its own.
+ *
+ * Read in the meeting's {@link IanaTimeZone}, never the reader's.
+ */
+export type IsoTime = Branded<string, 'IsoTime'>;
+
+/**
+ * An IANA timezone identifier, for example `Asia/Makassar`.
+ *
+ * Stored explicitly on every meeting. The OS timezone may be offered as a
+ * default when the Host creates a meeting, but is never used implicitly to
+ * decide what a stored schedule means (ADR-0005).
+ */
+export type IanaTimeZone = Branded<string, 'IanaTimeZone'>;
+
+/** Resolution recorded for a processed remote submission (ADR-0008). */
+export type SubmissionResolution =
+  | 'IMPORTED'
+  | 'REPLACED'
+  | 'REJECTED_DUPLICATE'
+  | 'REJECTED_INVALID';

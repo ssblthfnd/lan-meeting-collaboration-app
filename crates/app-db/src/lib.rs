@@ -13,19 +13,31 @@
 //! The database file is local to the Host device and is never exposed to the
 //! network (PRD 22.7, 22.8).
 //!
-//! Status: skeleton. No tables, migrations or queries exist yet
-//! (Phase 1, step 1).
+//! # What the schema enforces by itself
+//!
+//! The migration is written so that the invariants below hold even if a caller
+//! forgets to check them. A disabled button is not enforcement, and neither is
+//! a validation function that some future code path skips:
+//!
+//! - ids are canonical UUIDv7, not arbitrary strings
+//! - system timestamps are UTC, fixed width, and sort chronologically as text
+//! - a participant's note is unique per meeting (ADR-0003)
+//! - a note's participant belongs to the note's meeting, via a composite key
+//! - at most one live session per participant identity (ADR-0002)
+//! - note history is never rewritten, and audit rows are append-only
+//! - a note carries at most five links (PRD section 14)
+//!
+//! Status: Phase 1, step 1. Schema, migrations, pool and transaction helpers
+//! exist. Repositories arrive with the steps that need them; there is
+//! deliberately no meeting or note service here yet.
 
 #![forbid(unsafe_code)]
 
-use thiserror::Error;
+pub mod error;
+pub mod migrations;
+pub mod pool;
+pub mod sql;
 
-pub type DbResult<T> = Result<T, DbError>;
-
-/// Errors produced by the persistence layer.
-#[derive(Debug, Error)]
-pub enum DbError {
-    /// Placeholder until the SQLite driver is introduced in Phase 1, step 1.
-    #[error("database error: {0}")]
-    Other(String),
-}
+pub use error::{DbError, DbResult};
+pub use pool::Db;
+pub use sql::Sql;

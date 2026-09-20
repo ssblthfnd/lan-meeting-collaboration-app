@@ -11,3 +11,10 @@ authors.workspace = true
 [dependencies]
 app-core = { workspace = true }
 thiserror = { workspace = true }
+rusqlite = { workspace = true }
+r2d2 = { workspace = true }
+r2d2_sqlite = { workspace = true }
+refinery = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

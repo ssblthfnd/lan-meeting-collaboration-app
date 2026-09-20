@@ -15,6 +15,8 @@ history.
 | [0007](0007-note-canonical-format.md) | Canonical note format: GFM-subset Markdown | Accepted |
 | [0008](0008-phase1-schema-refinements.md) | Phase 1 schema refinements | Accepted |
 | [0009](0009-remote-form-no-framework.md) | Remote form uses no UI framework | Accepted |
+| [0010](0010-datetime-library-jiff.md) | Date-time library: jiff | Accepted |
+| [0011](0011-identifier-and-storage-formats.md) | Identifier type and canonical storage formats | Accepted |
 
 Template:
 
