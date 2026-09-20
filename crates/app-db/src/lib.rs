@@ -27,17 +27,27 @@
 //! - note history is never rewritten, and audit rows are append-only
 //! - a note carries at most five links (PRD section 14)
 //!
-//! Status: Phase 1, step 1. Schema, migrations, pool and transaction helpers
-//! exist. Repositories arrive with the steps that need them; there is
-//! deliberately no meeting or note service here yet.
+//! # Adapter, not decision-maker
+//!
+//! [`repository`] implements `app_core::port::DomainTx`, the persistence port
+//! the domain defines. It holds persistence mechanics only: authorization and
+//! the meeting-lock check live in `app-core`, and every write method here
+//! requires an `Authorized` that only `app-core` can mint. This crate cannot
+//! grant itself permission to write.
+//!
+//! Status: Phase 1, step 2. Schema, migrations, pool, transaction helpers and
+//! the domain-port adapter exist. Query-side repositories arrive with the steps
+//! that need them.
 
 #![forbid(unsafe_code)]
 
 pub mod error;
 pub mod migrations;
 pub mod pool;
+pub mod repository;
 pub mod sql;
 
 pub use error::{DbError, DbResult};
 pub use pool::Db;
+pub use repository::DbTx;
 pub use sql::Sql;

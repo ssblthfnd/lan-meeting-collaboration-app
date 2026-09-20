@@ -17,6 +17,7 @@ history.
 | [0009](0009-remote-form-no-framework.md) | Remote form uses no UI framework | Accepted |
 | [0010](0010-datetime-library-jiff.md) | Date-time library: jiff | Accepted |
 | [0011](0011-identifier-and-storage-formats.md) | Identifier type and canonical storage formats | Accepted |
+| [0012](0012-domain-mutation-boundary.md) | The domain mutation boundary | Accepted |
 
 Template:
 

@@ -165,10 +165,28 @@ impl Db {
     where
         F: FnOnce(&Transaction<'_>) -> DbResult<T>,
     {
-        let mut conn = self.writer()?;
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        self.write_with(f)
+    }
+
+    /// Like [`Db::write`], but for a caller whose own error type can absorb a
+    /// [`DbError`].
+    ///
+    /// The domain layer needs this: its closures fail with a `DomainError`, and
+    /// that error must survive the rollback rather than being flattened into a
+    /// generic database failure. When `f` returns `Err`, the transaction is
+    /// dropped without committing - SQLite rolls it back - and the caller's own
+    /// error is returned untouched.
+    pub fn write_with<T, E, F>(&self, f: F) -> Result<T, E>
+    where
+        F: FnOnce(&Transaction<'_>) -> Result<T, E>,
+        E: From<DbError>,
+    {
+        let mut conn = self.writer().map_err(E::from)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| E::from(DbError::from(e)))?;
         let value = f(&tx)?;
-        tx.commit()?;
+        tx.commit().map_err(|e| E::from(DbError::from(e)))?;
         Ok(value)
     }
 
