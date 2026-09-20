@@ -165,8 +165,8 @@ fn migration_is_idempotent_and_records_its_version() {
         })
         .unwrap();
 
-    assert_eq!(applied, 1);
-    assert_eq!(app_db::migrations::embedded_versions(), vec![1]);
+    assert_eq!(applied, 2);
+    assert_eq!(app_db::migrations::embedded_versions(), vec![1, 2]);
 }
 
 #[test]

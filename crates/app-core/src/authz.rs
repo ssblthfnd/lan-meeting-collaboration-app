@@ -21,14 +21,24 @@ use crate::id::{MeetingId, ParticipantId};
 
 /// A state-changing operation the domain layer offers.
 ///
-/// This enum lists only what Step 2 actually implements. Operations are added
+/// This enum lists only what is actually implemented. Operations are added
 /// alongside their implementation, not in advance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
+    /// Create a new meeting, in `DRAFT`.
+    CreateMeeting,
+    /// Change a `DRAFT` meeting's configuration.
+    UpdateMeeting,
     /// Move a meeting from `DRAFT` to `OPEN`.
     OpenMeeting,
     /// Move a meeting from `OPEN` to `LOCKED`.
     LockMeeting,
+    /// Add a participant to a `DRAFT` meeting's roster.
+    AddParticipant,
+    /// Change a participant's details.
+    UpdateParticipant,
+    /// Remove a participant from the roster.
+    RemoveParticipant,
     /// Create or replace the note belonging to `participant_id`.
     WriteNote { participant_id: ParticipantId },
 }
@@ -38,15 +48,26 @@ impl Operation {
     #[must_use]
     pub fn action(&self) -> &'static str {
         match self {
+            Operation::CreateMeeting => "create a meeting",
+            Operation::UpdateMeeting => "change meeting configuration",
             Operation::OpenMeeting => "open a meeting",
             Operation::LockMeeting => "lock a meeting",
+            Operation::AddParticipant => "add a participant",
+            Operation::UpdateParticipant => "change a participant",
+            Operation::RemoveParticipant => "remove a participant",
             Operation::WriteNote { .. } => "write a note",
         }
     }
 
     fn target(&self) -> &'static str {
         match self {
-            Operation::OpenMeeting | Operation::LockMeeting => "the meeting",
+            Operation::CreateMeeting
+            | Operation::UpdateMeeting
+            | Operation::OpenMeeting
+            | Operation::LockMeeting => "the meeting",
+            Operation::AddParticipant
+            | Operation::UpdateParticipant
+            | Operation::RemoveParticipant => "the participant roster",
             Operation::WriteNote { .. } => "another participant's note",
         }
     }
@@ -131,6 +152,14 @@ pub fn authorize(
         })
     };
 
+    // Everything except writing a note belongs to the Host alone: the meeting
+    // itself, its lifecycle and its roster (PRD section 5.1, and section 5.2's
+    // list of what a participant cannot do).
+    let host_only = |actor_type: &'static str| match operation {
+        Operation::WriteNote { .. } => None,
+        _ => Some(refuse(actor_type)),
+    };
+
     match actor {
         // The Host owns the meeting and may edit any participant's note
         // (PRD section 5.1, section 15).
@@ -144,11 +173,11 @@ pub fn authorize(
             if *actor_meeting != meeting_id {
                 return Err(DomainError::Unauthorized { meeting_id });
             }
+            // Meeting configuration, lifecycle and roster belong to the Host.
+            if let Some(refusal) = host_only("PARTICIPANT") {
+                return refusal;
+            }
             match operation {
-                // Meeting configuration and lifecycle belong to the Host
-                // (PRD section 5.2: participants cannot change the meeting or
-                // lock it).
-                Operation::OpenMeeting | Operation::LockMeeting => refuse("PARTICIPANT"),
                 // A participant may write their own note and no other
                 // (PRD section 5.2, architecture rules section 14).
                 Operation::WriteNote {
@@ -160,6 +189,12 @@ pub fn authorize(
                         refuse("PARTICIPANT")
                     }
                 }
+                // Unreachable: `host_only` has already refused every other
+                // operation. It is a refusal rather than a panic so that the
+                // default for a new operation is "no", and `Operation::action`
+                // and `Operation::target` are the exhaustive matches that force
+                // a new variant to be considered here at all.
+                _ => refuse("PARTICIPANT"),
             }
         }
 
@@ -170,8 +205,10 @@ pub fn authorize(
             if *actor_meeting != meeting_id {
                 return Err(DomainError::Unauthorized { meeting_id });
             }
+            if let Some(refusal) = host_only("REMOTE_IMPORT") {
+                return refusal;
+            }
             match operation {
-                Operation::OpenMeeting | Operation::LockMeeting => refuse("REMOTE_IMPORT"),
                 // An import is confined to the participant its validated
                 // context names. It carries no wider authority than the
                 // participant whose submission it is (ADR-0008).
@@ -184,6 +221,8 @@ pub fn authorize(
                         refuse("REMOTE_IMPORT")
                     }
                 }
+                // Unreachable, as above.
+                _ => refuse("REMOTE_IMPORT"),
             }
         }
     }
@@ -202,18 +241,28 @@ mod tests {
         }
     }
 
+    /// Every operation except writing a note, which is the only one a
+    /// participant can ever be approved for.
+    const HOST_ONLY: [Operation; 6] = [
+        Operation::CreateMeeting,
+        Operation::UpdateMeeting,
+        Operation::OpenMeeting,
+        Operation::LockMeeting,
+        Operation::AddParticipant,
+        Operation::UpdateParticipant,
+    ];
+
     #[test]
-    fn the_host_may_open_lock_and_write_any_note() {
+    fn the_host_may_perform_every_operation() {
         let meeting_id = MeetingId::new();
         let someone = ParticipantId::new();
 
-        for operation in [
-            Operation::OpenMeeting,
-            Operation::LockMeeting,
+        for operation in HOST_ONLY.into_iter().chain([
+            Operation::RemoveParticipant,
             Operation::WriteNote {
                 participant_id: someone,
             },
-        ] {
+        ]) {
             let approval = authorize(&Actor::Host, meeting_id, operation).unwrap();
             assert_eq!(approval.actor_type(), "HOST");
             // The Host is not a participant, so history records no author id.
@@ -264,6 +313,54 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn a_participant_may_not_change_configuration_or_the_roster() {
+        let meeting_id = MeetingId::new();
+        let actor = participant_actor(meeting_id, ParticipantId::new());
+
+        for operation in HOST_ONLY.into_iter().chain([Operation::RemoveParticipant]) {
+            let err = authorize(&actor, meeting_id, operation).unwrap_err();
+            assert_eq!(
+                err,
+                DomainError::Forbidden {
+                    actor_type: "PARTICIPANT",
+                    action: operation.action(),
+                    target: operation.target(),
+                },
+                "{operation:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_remote_import_may_not_change_configuration_or_the_roster() {
+        // An import carries exactly the authority of the participant whose
+        // submission it is, which is none over the meeting or its roster.
+        let meeting_id = MeetingId::new();
+        let actor = Actor::RemoteImport {
+            meeting_id,
+            participant_id: ParticipantId::new(),
+        };
+
+        for operation in HOST_ONLY.into_iter().chain([Operation::RemoveParticipant]) {
+            let err = authorize(&actor, meeting_id, operation).unwrap_err();
+            assert!(
+                matches!(err, DomainError::Forbidden { .. }),
+                "{operation:?}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn creating_a_meeting_is_not_something_a_participant_has_standing_for() {
+        // A create is scoped to an id that does not exist yet, so a participant
+        // session - which is bound to one existing meeting (ADR-0002) - is not
+        // a party to it at all.
+        let actor = participant_actor(MeetingId::new(), ParticipantId::new());
+        let err = authorize(&actor, MeetingId::new(), Operation::CreateMeeting).unwrap_err();
+        assert!(matches!(err, DomainError::Unauthorized { .. }), "{err:?}");
     }
 
     #[test]

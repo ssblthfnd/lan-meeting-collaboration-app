@@ -18,8 +18,41 @@ use crate::audit::AuditEntry;
 use crate::authz::Authorized;
 use crate::error::DomainResult;
 use crate::id::{MeetingId, NoteId, NoteVersionId, ParticipantId};
-use crate::meeting::{Meeting, MeetingStatus};
+use crate::meeting::{Meeting, MeetingConfiguration, MeetingStatus};
+use crate::participant::ParticipantDetails;
 use crate::time::UtcTimestamp;
+
+/// A meeting that does not exist yet.
+///
+/// Carries no id: the adapter takes it from the [`Authorized`] passed alongside,
+/// so the row cannot be written under an id the actor was not authorized for.
+/// `status` is supplied by the domain rather than chosen by the adapter, because
+/// "a new meeting starts in `DRAFT`" is a business rule and persistence holds
+/// none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewMeeting {
+    pub configuration: MeetingConfiguration,
+    pub status: MeetingStatus,
+    pub at: UtcTimestamp,
+}
+
+/// A participant that does not exist yet.
+///
+/// As with [`NewMeeting`], the meeting id comes from the proof and not from
+/// here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewParticipant {
+    pub id: ParticipantId,
+    pub details: ParticipantDetails,
+    pub at: UtcTimestamp,
+}
+
+/// A participant of a meeting, as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantRow {
+    pub id: ParticipantId,
+    pub details: ParticipantDetails,
+}
 
 /// A participant's current note, as stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,12 +99,23 @@ pub trait DomainTx {
     /// [`Meeting`] is the only state a mutation may be judged against.
     fn find_meeting(&self, meeting_id: MeetingId) -> DomainResult<Option<Meeting>>;
 
-    /// Whether this participant belongs to this meeting.
-    fn participant_exists(
+    /// This meeting's participant, if they belong to it.
+    ///
+    /// Scoped by meeting: a participant of another meeting is reported as
+    /// absent, which is the same fact from the caller's point of view and does
+    /// not leak the existence of other rosters.
+    fn find_participant(
         &self,
         meeting_id: MeetingId,
         participant_id: ParticipantId,
-    ) -> DomainResult<bool>;
+    ) -> DomainResult<Option<ParticipantRow>>;
+
+    /// How many participants the meeting currently has.
+    ///
+    /// Read inside the mutating transaction, so the 99-participant limit is
+    /// judged against committed state rather than a count a UI remembers
+    /// (PRD section 7, architecture rules section 15).
+    fn count_participants(&self, meeting_id: MeetingId) -> DomainResult<i64>;
 
     /// The participant's single note, if they have written one (ADR-0003).
     fn find_note(
@@ -86,6 +130,42 @@ pub trait DomainTx {
     /// state. The database additionally holds `UNIQUE(note_id, version)`, so a
     /// lost race cannot produce two rows with the same number.
     fn latest_note_version(&self, note_id: NoteId) -> DomainResult<i64>;
+
+    /// Insert a new meeting.
+    fn insert_meeting(&self, proof: &Authorized, meeting: &NewMeeting) -> DomainResult<()>;
+
+    /// Replace a meeting's configuration, leaving its lifecycle status alone.
+    fn update_meeting_configuration(
+        &self,
+        proof: &Authorized,
+        configuration: &MeetingConfiguration,
+        at: UtcTimestamp,
+    ) -> DomainResult<()>;
+
+    /// Add a participant to the authorized meeting's roster.
+    fn insert_participant(
+        &self,
+        proof: &Authorized,
+        participant: &NewParticipant,
+    ) -> DomainResult<()>;
+
+    /// Replace a participant's details.
+    ///
+    /// `participants` has no `updated_at` column, so the time of the change is
+    /// recorded by the audit entry written in the same transaction.
+    fn update_participant(
+        &self,
+        proof: &Authorized,
+        participant_id: ParticipantId,
+        details: &ParticipantDetails,
+    ) -> DomainResult<()>;
+
+    /// Remove a participant from the authorized meeting's roster.
+    fn delete_participant(
+        &self,
+        proof: &Authorized,
+        participant_id: ParticipantId,
+    ) -> DomainResult<()>;
 
     /// Set a meeting's lifecycle status, and its `locked_at` when locking.
     fn set_meeting_status(

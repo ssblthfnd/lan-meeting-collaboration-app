@@ -50,6 +50,23 @@ pub enum DomainError {
         title: String,
     },
 
+    /// The meeting has moved past `DRAFT`, so its configuration and roster are
+    /// settled (ADR-0013).
+    ///
+    /// Distinct from [`DomainError::MeetingLocked`], which is the stronger
+    /// statement that *nothing* may change. A meeting that is `OPEN` still
+    /// accepts notes; it just no longer accepts changes to what the meeting is
+    /// or who is in it. Distinct from [`DomainError::Forbidden`] too: no actor
+    /// may do this, so it is not a question of the actor's role.
+    #[error(
+        "meeting {meeting_id} is no longer being prepared: \
+             expected status DRAFT, detected {detected}"
+    )]
+    MeetingNotDraft {
+        meeting_id: MeetingId,
+        detected: MeetingStatus,
+    },
+
     /// No such participant in this meeting.
     ///
     /// Also returned when the participant exists but belongs to a different

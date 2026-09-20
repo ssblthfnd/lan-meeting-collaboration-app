@@ -25,7 +25,8 @@
 //! - a note's participant belongs to the note's meeting, via a composite key
 //! - at most one live session per participant identity (ADR-0002)
 //! - note history is never rewritten, and audit rows are append-only
-//! - a note carries at most five links (PRD section 14)
+//! - a note carries at most five links, and a meeting at most 99 participants
+//!   (PRD sections 7 and 14)
 //!
 //! # Adapter, not decision-maker
 //!
@@ -35,9 +36,10 @@
 //! requires an `Authorized` that only `app-core` can mint. This crate cannot
 //! grant itself permission to write.
 //!
-//! Status: Phase 1, step 2. Schema, migrations, pool, transaction helpers and
-//! the domain-port adapter exist. Query-side repositories arrive with the steps
-//! that need them.
+//! Status: Phase 1, step 3. Schema, migrations, pool, transaction helpers and
+//! the domain-port adapter exist, the last covering meeting configuration and
+//! the participant roster. Query-side repositories arrive with the steps that
+//! need them.
 
 #![forbid(unsafe_code)]
 

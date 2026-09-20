@@ -18,6 +18,7 @@ history.
 | [0010](0010-datetime-library-jiff.md) | Date-time library: jiff | Accepted |
 | [0011](0011-identifier-and-storage-formats.md) | Identifier type and canonical storage formats | Accepted |
 | [0012](0012-domain-mutation-boundary.md) | The domain mutation boundary | Accepted |
+| [0013](0013-draft-only-configuration-and-roster.md) | A meeting's configuration and roster are settled in DRAFT | Accepted |
 
 Template:
 

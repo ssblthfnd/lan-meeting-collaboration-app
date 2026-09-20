@@ -12,7 +12,8 @@
 //! Responsibilities:
 //! - actor contract ([`actor::Actor`]) and authorization ([`authz`])
 //! - identifiers ([`id`]) and time/timezone handling ([`time`])
-//! - meeting lifecycle and the lock rule ([`meeting`])
+//! - meeting lifecycle, configuration and the lock rule ([`meeting`])
+//! - the participant roster ([`participant`])
 //! - note versioning and audit policy ([`service`], [`audit`])
 //! - the persistence port ([`port`]) that `app-db` implements
 //!
@@ -20,8 +21,9 @@
 //! has no SQLite and no transport dependency; persistence arrives through
 //! [`port::Database`].
 //!
-//! Status: Phase 1, step 2. Identifiers, time, the lifecycle, authorization,
-//! note versioning, audit policy and the mutation boundary are implemented.
+//! Status: Phase 1, step 3. Identifiers, time, the lifecycle, authorization,
+//! note versioning, audit policy and the mutation boundary are implemented, and
+//! so are meeting creation/configuration and the participant roster.
 //! Session/token resolution belongs to the transport layer and is not here.
 
 #![forbid(unsafe_code)]
@@ -32,8 +34,10 @@ pub mod authz;
 pub mod error;
 pub mod id;
 pub mod meeting;
+pub mod participant;
 pub mod port;
 pub mod service;
+mod text;
 pub mod time;
 
 pub use actor::Actor;
@@ -44,7 +48,14 @@ pub use id::{
     AuditLogId, Entity, Id, IdError, MeetingId, NoteId, NoteLinkId, NoteVersionId, ParticipantId,
     RemoteSubmissionId, SessionId, SubmissionId,
 };
-pub use meeting::{Meeting, MeetingStatus};
-pub use port::{Database, DomainTx, NewNote, NewNoteVersion, NoteRow};
-pub use service::{Domain, MeetingTransitioned, NoteWritten, WriteNote};
+pub use meeting::{Meeting, MeetingConfiguration, MeetingStatus};
+pub use participant::{ParticipantDetails, MAX_PARTICIPANTS, MIN_PARTICIPANTS};
+pub use port::{
+    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NoteRow,
+    ParticipantRow,
+};
+pub use service::{
+    Domain, MeetingCreated, MeetingTransitioned, MeetingUpdated, NoteWritten, ParticipantAdded,
+    ParticipantRemoved, ParticipantUpdated, WriteNote,
+};
 pub use time::{MeetingDate, MeetingTime, MeetingTimeZone, TimeError, UtcTimestamp};
