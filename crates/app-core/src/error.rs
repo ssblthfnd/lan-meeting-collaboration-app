@@ -67,6 +67,37 @@ pub enum DomainError {
         detected: MeetingStatus,
     },
 
+    /// The meeting is not `OPEN`, so participants cannot join or take part.
+    ///
+    /// The counterpart of [`DomainError::MeetingNotDraft`] at the other end of
+    /// the lifecycle: preparation happens in `DRAFT`, participation happens in
+    /// `OPEN`, and each refuses the other's operations.
+    #[error("meeting {meeting_id} is not open to participants: expected status OPEN, detected {detected}")]
+    MeetingNotOpen {
+        meeting_id: MeetingId,
+        detected: MeetingStatus,
+    },
+
+    /// A live session already holds this identity (ADR-0002, first-claim-wins).
+    ///
+    /// Not a permissions problem and not a validation problem: the claim was
+    /// well-formed and permitted, and somebody else simply has it. Whether the
+    /// holder's claim has been acknowledged by the Host makes no difference -
+    /// pending and acknowledged are equally held (ADR-0016).
+    #[error("participant {participant_id} in meeting {meeting_id} is already claimed by an active session")]
+    IdentityAlreadyClaimed {
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+    },
+
+    /// No live session for the credential presented.
+    ///
+    /// Covers a session that never existed and one that was revoked: from the
+    /// holder's point of view those are the same fact, and distinguishing them
+    /// would tell someone holding a stale token that it was once real.
+    #[error("no active session for meeting {meeting_id}")]
+    SessionNotFound { meeting_id: MeetingId },
+
     /// No such participant in this meeting.
     ///
     /// Also returned when the participant exists but belongs to a different

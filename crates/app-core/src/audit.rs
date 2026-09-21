@@ -18,7 +18,7 @@ use core::fmt;
 
 use serde_json::Value;
 
-use crate::id::{MeetingId, NoteId, ParticipantId};
+use crate::id::{MeetingId, NoteId, ParticipantId, SessionId};
 use crate::time::UtcTimestamp;
 
 /// What happened.
@@ -41,6 +41,17 @@ pub enum AuditAction {
     ParticipantUpdated,
     /// A participant was removed from the roster.
     ParticipantRemoved,
+    /// A join token was minted for a meeting, invalidating any previous one.
+    ///
+    /// The token itself is never recorded - not here, not in metadata, not
+    /// anywhere. Only that one was issued, and when (PRD 22.2).
+    MeetingJoinTokenIssued,
+    /// A participant identity was claimed from the LAN (ADR-0002).
+    ParticipantClaimed,
+    /// The Host acknowledged a claim. Changes no authority (ADR-0016).
+    ParticipantClaimApproved,
+    /// A session was revoked, freeing the identity to be claimed again.
+    ParticipantSessionRevoked,
     /// A participant's note was created for the first time.
     NoteCreated,
     /// An existing note's content was replaced.
@@ -59,6 +70,10 @@ impl AuditAction {
             AuditAction::ParticipantAdded => "participant.added",
             AuditAction::ParticipantUpdated => "participant.updated",
             AuditAction::ParticipantRemoved => "participant.removed",
+            AuditAction::MeetingJoinTokenIssued => "meeting.join_token_issued",
+            AuditAction::ParticipantClaimed => "participant.claimed",
+            AuditAction::ParticipantClaimApproved => "participant.claim_approved",
+            AuditAction::ParticipantSessionRevoked => "participant.session_revoked",
             AuditAction::NoteCreated => "note.created",
             AuditAction::NoteUpdated => "note.updated",
         }
@@ -76,6 +91,7 @@ impl fmt::Display for AuditAction {
 pub enum AuditTarget {
     Meeting(MeetingId),
     Participant(ParticipantId),
+    Session(SessionId),
     Note(NoteId),
 }
 
@@ -86,6 +102,7 @@ impl AuditTarget {
         match self {
             AuditTarget::Meeting(_) => "meeting",
             AuditTarget::Participant(_) => "participant",
+            AuditTarget::Session(_) => "session",
             AuditTarget::Note(_) => "note",
         }
     }
@@ -100,6 +117,7 @@ impl AuditTarget {
         match self {
             AuditTarget::Meeting(id) => id.to_storage(),
             AuditTarget::Participant(id) => id.to_storage(),
+            AuditTarget::Session(id) => id.to_storage(),
             AuditTarget::Note(id) => id.to_storage(),
         }
     }
@@ -141,6 +159,22 @@ mod tests {
         );
         assert_eq!(AuditAction::NoteCreated.as_str(), "note.created");
         assert_eq!(AuditAction::NoteUpdated.as_str(), "note.updated");
+        assert_eq!(
+            AuditAction::MeetingJoinTokenIssued.as_str(),
+            "meeting.join_token_issued"
+        );
+        assert_eq!(
+            AuditAction::ParticipantClaimed.as_str(),
+            "participant.claimed"
+        );
+        assert_eq!(
+            AuditAction::ParticipantClaimApproved.as_str(),
+            "participant.claim_approved"
+        );
+        assert_eq!(
+            AuditAction::ParticipantSessionRevoked.as_str(),
+            "participant.session_revoked"
+        );
     }
 
     #[test]
@@ -154,6 +188,11 @@ mod tests {
         let target = AuditTarget::Participant(participant_id);
         assert_eq!(target.target_type(), "participant");
         assert_eq!(target.target_id(), participant_id.to_storage());
+
+        let session_id = SessionId::new();
+        let target = AuditTarget::Session(session_id);
+        assert_eq!(target.target_type(), "session");
+        assert_eq!(target.target_id(), session_id.to_storage());
 
         let note_id = NoteId::new();
         let target = AuditTarget::Note(note_id);

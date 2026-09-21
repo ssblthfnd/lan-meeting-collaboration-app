@@ -21,6 +21,8 @@ history.
 | [0013](0013-draft-only-configuration-and-roster.md) | A meeting's configuration and roster are settled in DRAFT | Accepted |
 | [0014](0014-host-read-path.md) | Reads do not go through the mutation boundary | Accepted |
 | [0015](0015-host-error-contract.md) | The Host error contract | Accepted |
+| [0016](0016-lan-session-and-claim-model.md) | The LAN session and claim model | Accepted |
+| [0017](0017-local-qr-generation.md) | Local QR generation | Accepted |
 
 Template:
 

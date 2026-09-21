@@ -39,6 +39,7 @@
 //! omissions is the point - adding either command should be a deliberate act
 //! rather than a gap someone fills in passing.
 
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -49,9 +50,10 @@ use app_db::query::HostQueries;
 use app_db::Db;
 
 use crate::dto::{
-    AuditEntryDto, MeetingConfigurationInput, MeetingCreatedDto, MeetingDetailDto,
-    MeetingSummaryDto, MeetingTransitionedDto, MeetingUpdatedDto, ParticipantAddedDto,
-    ParticipantDetailsInput, ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto,
+    AuditEntryDto, JoinTokenIssuedDto, LanInterfaceDto, MeetingConfigurationInput,
+    MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
+    MeetingUpdatedDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantRemovedDto,
+    ParticipantSummaryDto, ParticipantUpdatedDto, SessionChangedDto,
 };
 use crate::error::{HostError, HostErrorKind, HostResult};
 
@@ -62,7 +64,10 @@ pub const DATABASE_FILE: &str = "meetings.sqlite3";
 
 /// Everything a Host command needs.
 pub struct HostState {
-    domain: Domain<Arc<Db>>,
+    /// Behind an `Arc` so the LAN server shares *this* boundary rather than
+    /// constructing its own. One `Domain` for both transports is the point of
+    /// ADR-0012: two would be two places for a rule to be enforced differently.
+    domain: Arc<Domain<Arc<Db>>>,
     db: Arc<Db>,
 }
 
@@ -71,7 +76,7 @@ impl HostState {
     #[must_use]
     pub fn new(db: Arc<Db>) -> Self {
         Self {
-            domain: Domain::new(Arc::clone(&db)),
+            domain: Arc::new(Domain::new(Arc::clone(&db))),
             db,
         }
     }
@@ -85,6 +90,18 @@ impl HostState {
     #[must_use]
     pub fn domain(&self) -> &Domain<Arc<Db>> {
         &self.domain
+    }
+
+    /// The same boundary, shareable with the LAN server.
+    #[must_use]
+    pub fn shared_domain(&self) -> Arc<Domain<Arc<Db>>> {
+        Arc::clone(&self.domain)
+    }
+
+    /// The shared database handle, for the LAN server.
+    #[must_use]
+    pub fn shared_db(&self) -> Arc<Db> {
+        Arc::clone(&self.db)
     }
 
     fn queries(&self) -> HostQueries<'_> {
@@ -206,6 +223,111 @@ impl HostState {
             .participants(meeting_id)
             .map_err(query_failed)?;
         Ok(rows.into_iter().map(ParticipantSummaryDto::from).collect())
+    }
+
+    /* ------------------------------------------------------------------
+     * LAN access
+     * ------------------------------------------------------------------ */
+
+    /// Mint a join token and build the URL and QR code for it.
+    ///
+    /// The token is generated here, hashed, and only the hash is handed to the
+    /// domain - which accepts nothing else, so the plaintext cannot be persisted
+    /// even by a mistake in this method (PRD 22.2).
+    ///
+    /// The plaintext is returned to the Host once, for the URL and the QR. It is
+    /// not kept, and issuing again produces a different one and invalidates this.
+    ///
+    /// `address` is chosen by the Host from [`HostState::lan_interfaces`]: only
+    /// they know which network the participants are on, and `127.0.0.1` must
+    /// never be assumed reachable (architecture rules section 4).
+    pub fn issue_join_token(
+        &self,
+        meeting_id: &str,
+        address: &str,
+        port: u16,
+    ) -> HostResult<JoinTokenIssuedDto> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let address: IpAddr = address.parse().map_err(|_| {
+            HostError::validation(
+                "host address",
+                "an IPv4 address from the list of local interfaces",
+                address,
+            )
+        })?;
+
+        let credential = app_server::mint().map_err(|error| {
+            eprintln!("[host] {error}");
+            HostError::new(
+                HostErrorKind::Persistence,
+                "A secure join token could not be generated.".to_owned(),
+            )
+        })?;
+
+        let outcome = self
+            .domain
+            .issue_join_token(&Actor::Host, meeting_id, &credential.hash)?;
+
+        let join_url = app_server::join_url(address, port, &credential.token);
+        let qr = crate::qr::encode(&join_url).map_err(|error| {
+            eprintln!("[host] {error}");
+            HostError::new(
+                HostErrorKind::Persistence,
+                "The join code could not be drawn.".to_owned(),
+            )
+        })?;
+
+        Ok(JoinTokenIssuedDto {
+            meeting_id: outcome.meeting_id,
+            join_url,
+            qr,
+            replaced_previous: outcome.replaced_previous,
+            at: outcome.at,
+        })
+    }
+
+    /// Every local address the Host could advertise, most useful first.
+    #[must_use]
+    pub fn lan_interfaces(&self) -> Vec<LanInterfaceDto> {
+        app_server::interfaces()
+            .into_iter()
+            .map(LanInterfaceDto::from)
+            .collect()
+    }
+
+    /// Acknowledge a participant's claim.
+    ///
+    /// Records that the Host saw it. It grants nothing - the participant could
+    /// already act, and still can (ADR-0016).
+    pub fn approve_participant_claim(
+        &self,
+        meeting_id: &str,
+        participant_id: &str,
+    ) -> HostResult<SessionChangedDto> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let participant_id = crate::dto::parse_participant_id(participant_id)?;
+        let outcome = self
+            .domain
+            .approve_claim(&Actor::Host, meeting_id, participant_id)?;
+        Ok(outcome.into())
+    }
+
+    /// End a participant's session, freeing the identity to be claimed again.
+    ///
+    /// What makes first-claim-wins operable: an identity taken by the wrong
+    /// person, or stranded on a closed laptop, can be released
+    /// (ADR-0002 rule 5).
+    pub fn revoke_participant_session(
+        &self,
+        meeting_id: &str,
+        participant_id: &str,
+    ) -> HostResult<SessionChangedDto> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let participant_id = crate::dto::parse_participant_id(participant_id)?;
+        let outcome = self
+            .domain
+            .revoke_session(&Actor::Host, meeting_id, participant_id)?;
+        Ok(outcome.into())
     }
 
     /* ------------------------------------------------------------------

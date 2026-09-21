@@ -10,10 +10,11 @@ a submission file back for the Host to import.
 Everything is stored in a local SQLite database on the Host device.
 **No cloud, no external API, no public hosting, no AI API.**
 
-> **Status: Host meeting management works.** A Host can create a meeting,
-> configure it, build a roster of up to 99 participants, open the meeting and
-> read its audit trail. The LAN server, notes and export are not implemented yet.
-> See [Roadmap](#roadmap).
+> **Status: participants can join over the LAN.** A Host can create a meeting,
+> configure it, build a roster of up to 99 participants, open it, start the LAN
+> server and show a join link and QR code. Participants claim an identity from a
+> browser on the same network. Notes, realtime updates and export are not
+> implemented yet. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -102,6 +103,7 @@ npm run dev:host           # host UI alone, in a browser
 npm run dev:lan            # LAN participant UI alone
 npm run dev:remote         # remote form template alone
 npm run build:web          # build all three UI bundles
+npm run build:lan          # participant UI; app-server embeds this bundle
 npm run build:remote       # build the form + verify it is offline-self-contained
 npm run typecheck          # TypeScript across all workspaces
 npm run check              # typecheck + rustfmt + clippy + cargo test
@@ -116,8 +118,8 @@ Phase 1 is built in order, each step independently demonstrable:
 2. Data spine: migrations, repositories, audit triggers
 3. Domain core: actors, authorization, lock-in-transaction, versioning
 4. Meeting and participant management in the domain
-5. Host UI: meeting lifecycle, participants, audit view *(current)*
-6. LAN server, join flow, identity claim, QR
+5. Host UI: meeting lifecycle, participants, audit view
+6. LAN server, join flow, identity claim, QR *(current)*
 7. Realtime: audience-scoped WebSocket
 8. Host note editing and version history
 9. Remote form generation

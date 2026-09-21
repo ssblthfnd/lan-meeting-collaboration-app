@@ -43,5 +43,46 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.31"
 refinery = { version = "0.9", features = ["rusqlite"] }
 
+# LAN transport (Phase 1, step 6). Every crate here was selected in ADR-0006
+# and arrives with its first use, as that ADR requires.
+tokio = { version = "1", default-features = false, features = [
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "signal",
+] }
+axum = { version = "0.8", default-features = false, features = [
+  "http1",
+  "json",
+  "tokio",
+  "query",
+] }
+tower = "0.5"
+tower-http = { version = "0.6", default-features = false, features = [
+  "set-header",
+  "limit",
+] }
+
+# Join and session tokens: OS entropy plus SHA-256. Tokens are 256-bit random
+# values, so a password hash would be the wrong tool (ADR-0006). `subtle` was
+# also selected there and is deliberately *not* added: lookups are indexed
+# equality matches on a hash column, so nothing compares a secret in Rust.
+rand = "0.9"
+sha2 = "0.10"
+
+# Embeds the built `apps/lan-ui` bundle in the binary, so a participant browser
+# is served from the Host process with no files on disk (ADR-0006).
+rust-embed = { version = "8", features = ["mime-guess"] }
+
+# Enumerating LAN interfaces so the Host can choose which address to advertise.
+# `127.0.0.1` is never assumed reachable (architecture rules section 4).
+local-ip-address = "0.6"
+
+# QR for the join URL, generated locally (PRD section 23, ADR-0017).
+# `default-features = false` drops the `image` dependency: only the encoder is
+# used, and the matrix is rendered as SVG rectangles by the Host UI.
+qrcode = { version = "0.14", default-features = false }
+
 # Dev-only
 tempfile = "3"
+http-body-util = "0.1"

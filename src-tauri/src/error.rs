@@ -73,6 +73,22 @@ pub enum HostErrorKind {
         meeting_id: MeetingId,
         detected: MeetingStatus,
     },
+    MeetingNotOpen {
+        meeting_id: MeetingId,
+        detected: MeetingStatus,
+    },
+    /// A live session already holds the identity (ADR-0002).
+    ///
+    /// Carries the participant so the Host UI can point at the right row: they
+    /// are looking at their own roster, and the useful next action is to revoke
+    /// the session holding it.
+    IdentityAlreadyClaimed {
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+    },
+    SessionNotFound {
+        meeting_id: MeetingId,
+    },
     ParticipantNotFound {
         meeting_id: MeetingId,
         participant_id: ParticipantId,
@@ -101,14 +117,19 @@ impl HostErrorKind {
             HostErrorKind::Unauthorized { .. } | HostErrorKind::Forbidden { .. } => {
                 ErrorCategory::Authorization
             }
-            HostErrorKind::MeetingNotFound { .. } | HostErrorKind::ParticipantNotFound { .. } => {
-                ErrorCategory::NotFound
-            }
+            HostErrorKind::MeetingNotFound { .. }
+            | HostErrorKind::ParticipantNotFound { .. }
+            | HostErrorKind::SessionNotFound { .. } => ErrorCategory::NotFound,
             HostErrorKind::MeetingLocked { .. }
             | HostErrorKind::MeetingNotDraft { .. }
+            | HostErrorKind::MeetingNotOpen { .. }
             | HostErrorKind::InvalidTransition { .. } => ErrorCategory::Lifecycle,
             HostErrorKind::Validation { .. } => ErrorCategory::Validation,
-            HostErrorKind::Conflict => ErrorCategory::Conflict,
+            // Someone else holds the identity. A conflict rather than a
+            // refusal: the Host can resolve it by revoking that session.
+            HostErrorKind::IdentityAlreadyClaimed { .. } | HostErrorKind::Conflict => {
+                ErrorCategory::Conflict
+            }
             HostErrorKind::Persistence => ErrorCategory::Unexpected,
         }
     }
@@ -190,6 +211,23 @@ impl From<DomainError> for HostError {
                 meeting_id,
                 detected,
             },
+            DomainError::MeetingNotOpen {
+                meeting_id,
+                detected,
+            } => HostErrorKind::MeetingNotOpen {
+                meeting_id,
+                detected,
+            },
+            DomainError::IdentityAlreadyClaimed {
+                meeting_id,
+                participant_id,
+            } => HostErrorKind::IdentityAlreadyClaimed {
+                meeting_id,
+                participant_id,
+            },
+            DomainError::SessionNotFound { meeting_id } => {
+                HostErrorKind::SessionNotFound { meeting_id }
+            }
             DomainError::ParticipantNotFound {
                 meeting_id,
                 participant_id,
@@ -291,6 +329,27 @@ mod tests {
                 "lifecycle",
             ),
             (
+                DomainError::MeetingNotOpen {
+                    meeting_id,
+                    detected: MeetingStatus::Draft,
+                },
+                "meeting_not_open",
+                "lifecycle",
+            ),
+            (
+                DomainError::IdentityAlreadyClaimed {
+                    meeting_id,
+                    participant_id,
+                },
+                "identity_already_claimed",
+                "conflict",
+            ),
+            (
+                DomainError::SessionNotFound { meeting_id },
+                "session_not_found",
+                "not_found",
+            ),
+            (
                 DomainError::ParticipantNotFound {
                     meeting_id,
                     participant_id,
@@ -334,7 +393,7 @@ mod tests {
 
         // Every variant is covered: if `DomainError` gains one, this count fails
         // and the mapping has to be decided rather than defaulted.
-        assert_eq!(cases.len(), 10);
+        assert_eq!(cases.len(), 13);
 
         for (domain, kind, category) in cases {
             let json = as_json(HostError::from(domain));

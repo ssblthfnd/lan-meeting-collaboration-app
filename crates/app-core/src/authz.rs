@@ -39,6 +39,14 @@ pub enum Operation {
     UpdateParticipant,
     /// Remove a participant from the roster.
     RemoveParticipant,
+    /// Mint a join token for a meeting, invalidating any previous one.
+    IssueJoinToken,
+    /// Bind `participant_id` to a new session (ADR-0002, first-claim-wins).
+    ClaimIdentity { participant_id: ParticipantId },
+    /// Acknowledge a claim. Grants nothing (ADR-0016).
+    ApproveClaim { participant_id: ParticipantId },
+    /// End a participant's session, freeing the identity.
+    RevokeSession { participant_id: ParticipantId },
     /// Create or replace the note belonging to `participant_id`.
     WriteNote { participant_id: ParticipantId },
 }
@@ -55,6 +63,10 @@ impl Operation {
             Operation::AddParticipant => "add a participant",
             Operation::UpdateParticipant => "change a participant",
             Operation::RemoveParticipant => "remove a participant",
+            Operation::IssueJoinToken => "issue a join token",
+            Operation::ClaimIdentity { .. } => "claim an identity",
+            Operation::ApproveClaim { .. } => "approve a claim",
+            Operation::RevokeSession { .. } => "revoke a session",
             Operation::WriteNote { .. } => "write a note",
         }
     }
@@ -64,10 +76,15 @@ impl Operation {
             Operation::CreateMeeting
             | Operation::UpdateMeeting
             | Operation::OpenMeeting
-            | Operation::LockMeeting => "the meeting",
+            | Operation::LockMeeting
+            | Operation::IssueJoinToken => "the meeting",
             Operation::AddParticipant
             | Operation::UpdateParticipant
             | Operation::RemoveParticipant => "the participant roster",
+            Operation::ApproveClaim { .. } | Operation::RevokeSession { .. } => {
+                "another participant's session"
+            }
+            Operation::ClaimIdentity { .. } => "another participant's identity",
             Operation::WriteNote { .. } => "another participant's note",
         }
     }
@@ -152,18 +169,39 @@ pub fn authorize(
         })
     };
 
-    // Everything except writing a note belongs to the Host alone: the meeting
-    // itself, its lifecycle and its roster (PRD section 5.1, and section 5.2's
-    // list of what a participant cannot do).
-    let host_only = |actor_type: &'static str| match operation {
-        Operation::WriteNote { .. } => None,
-        _ => Some(refuse(actor_type)),
-    };
-
     match actor {
-        // The Host owns the meeting and may edit any participant's note
-        // (PRD section 5.1, section 15).
-        Actor::Host => approve("HOST", None),
+        // The Host owns the meeting, with one exception: claiming an identity
+        // is what the person *taking* that identity does from the LAN, and the
+        // Host has no session to claim into. Approving and revoking a claim are
+        // the Host's; making one is not.
+        Actor::Host => match operation {
+            Operation::ClaimIdentity { .. } => refuse("HOST"),
+            _ => approve("HOST", None),
+        },
+
+        // The narrowest actor there is. Holding a join token proves only that
+        // someone was given the meeting's URL (ADR-0002), so it buys exactly
+        // one thing: binding the identity it names to a new session.
+        //
+        // `participant_id` here is the identity being requested - a target, not
+        // an assertion of who is asking - and the partial unique index decides
+        // who wins a race for it.
+        Actor::Claimant {
+            meeting_id: actor_meeting,
+            participant_id,
+        } => {
+            if *actor_meeting != meeting_id {
+                return Err(DomainError::Unauthorized { meeting_id });
+            }
+            match operation {
+                Operation::ClaimIdentity {
+                    participant_id: target,
+                } if target == *participant_id => approve("PARTICIPANT", Some(*participant_id)),
+                // Everything else, including writing a note: refused. A join
+                // URL is not a session, and this is the line that says so.
+                _ => refuse("PARTICIPANT"),
+            }
+        }
 
         Actor::Participant {
             meeting_id: actor_meeting,
@@ -173,27 +211,19 @@ pub fn authorize(
             if *actor_meeting != meeting_id {
                 return Err(DomainError::Unauthorized { meeting_id });
             }
-            // Meeting configuration, lifecycle and roster belong to the Host.
-            if let Some(refusal) = host_only("PARTICIPANT") {
-                return refusal;
-            }
             match operation {
                 // A participant may write their own note and no other
                 // (PRD section 5.2, architecture rules section 14).
+                //
+                // Whether the Host has acknowledged their claim is deliberately
+                // not consulted: approval is acknowledgement, not a gate
+                // (ADR-0016). A session that exists and is not revoked can act.
                 Operation::WriteNote {
                     participant_id: target,
-                } => {
-                    if target == *participant_id {
-                        approve("PARTICIPANT", Some(*participant_id))
-                    } else {
-                        refuse("PARTICIPANT")
-                    }
-                }
-                // Unreachable: `host_only` has already refused every other
-                // operation. It is a refusal rather than a panic so that the
-                // default for a new operation is "no", and `Operation::action`
-                // and `Operation::target` are the exhaustive matches that force
-                // a new variant to be considered here at all.
+                } if target == *participant_id => approve("PARTICIPANT", Some(*participant_id)),
+                // Meeting configuration, lifecycle, the roster, and anyone
+                // else's session or note. Default-deny: a new operation is
+                // refused until someone decides otherwise here.
                 _ => refuse("PARTICIPANT"),
             }
         }
@@ -205,23 +235,13 @@ pub fn authorize(
             if *actor_meeting != meeting_id {
                 return Err(DomainError::Unauthorized { meeting_id });
             }
-            if let Some(refusal) = host_only("REMOTE_IMPORT") {
-                return refusal;
-            }
             match operation {
                 // An import is confined to the participant its validated
                 // context names. It carries no wider authority than the
                 // participant whose submission it is (ADR-0008).
                 Operation::WriteNote {
                     participant_id: target,
-                } => {
-                    if target == *participant_id {
-                        approve("REMOTE_IMPORT", Some(*participant_id))
-                    } else {
-                        refuse("REMOTE_IMPORT")
-                    }
-                }
-                // Unreachable, as above.
+                } if target == *participant_id => approve("REMOTE_IMPORT", Some(*participant_id)),
                 _ => refuse("REMOTE_IMPORT"),
             }
         }
@@ -361,6 +381,136 @@ mod tests {
         let actor = participant_actor(MeetingId::new(), ParticipantId::new());
         let err = authorize(&actor, MeetingId::new(), Operation::CreateMeeting).unwrap_err();
         assert!(matches!(err, DomainError::Unauthorized { .. }), "{err:?}");
+    }
+
+    fn claimant(meeting_id: MeetingId, participant_id: ParticipantId) -> Actor {
+        Actor::Claimant {
+            meeting_id,
+            participant_id,
+        }
+    }
+
+    #[test]
+    fn a_claimant_may_claim_the_one_identity_it_names_and_nothing_else() {
+        let meeting_id = MeetingId::new();
+        let me = ParticipantId::new();
+        let actor = claimant(meeting_id, me);
+
+        let approval = authorize(
+            &actor,
+            meeting_id,
+            Operation::ClaimIdentity { participant_id: me },
+        )
+        .unwrap();
+        // Recorded as a participant: a claim is performed by one (ADR-0016).
+        assert_eq!(approval.actor_type(), "PARTICIPANT");
+        assert_eq!(approval.created_by(), Some(me));
+
+        // Not someone else's identity.
+        assert!(matches!(
+            authorize(
+                &actor,
+                meeting_id,
+                Operation::ClaimIdentity {
+                    participant_id: ParticipantId::new()
+                },
+            ),
+            Err(DomainError::Forbidden { .. })
+        ));
+    }
+
+    #[test]
+    fn holding_a_join_url_does_not_let_you_write_a_note() {
+        // The whole reason `Actor::Claimant` exists. A join token proves only
+        // that someone was given the URL; every capability that needs a session
+        // must be out of reach until one exists.
+        let meeting_id = MeetingId::new();
+        let me = ParticipantId::new();
+        let actor = claimant(meeting_id, me);
+
+        for operation in HOST_ONLY.into_iter().chain([
+            Operation::RemoveParticipant,
+            Operation::WriteNote { participant_id: me },
+            Operation::ApproveClaim { participant_id: me },
+            Operation::RevokeSession { participant_id: me },
+        ]) {
+            let err = authorize(&actor, meeting_id, operation).unwrap_err();
+            assert!(
+                matches!(err, DomainError::Forbidden { .. }),
+                "{operation:?} must be refused for a claimant: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_claimant_has_no_standing_in_another_meeting() {
+        let actor = claimant(MeetingId::new(), ParticipantId::new());
+        let elsewhere = MeetingId::new();
+        let err = authorize(
+            &actor,
+            elsewhere,
+            Operation::ClaimIdentity {
+                participant_id: ParticipantId::new(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            DomainError::Unauthorized {
+                meeting_id: elsewhere
+            }
+        );
+    }
+
+    #[test]
+    fn a_session_backed_participant_cannot_claim_another_identity() {
+        // Having one session is not a licence to bind another. Re-claiming is
+        // what would let a reconnect become an identity change (ADR-0002 r10).
+        let meeting_id = MeetingId::new();
+        let me = ParticipantId::new();
+        let actor = participant_actor(meeting_id, me);
+
+        for target in [me, ParticipantId::new()] {
+            let err = authorize(
+                &actor,
+                meeting_id,
+                Operation::ClaimIdentity {
+                    participant_id: target,
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(err, DomainError::Forbidden { .. }), "{err:?}");
+        }
+    }
+
+    #[test]
+    fn the_host_may_manage_sessions_but_may_not_claim_an_identity() {
+        // Approving and revoking are the Host's; making a claim is the act of
+        // the person taking the identity, and the Host has no session for it.
+        let meeting_id = MeetingId::new();
+        let someone = ParticipantId::new();
+
+        for operation in [
+            Operation::IssueJoinToken,
+            Operation::ApproveClaim {
+                participant_id: someone,
+            },
+            Operation::RevokeSession {
+                participant_id: someone,
+            },
+        ] {
+            assert!(authorize(&Actor::Host, meeting_id, operation).is_ok());
+        }
+
+        let err = authorize(
+            &Actor::Host,
+            meeting_id,
+            Operation::ClaimIdentity {
+                participant_id: someone,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, DomainError::Forbidden { .. }), "{err:?}");
     }
 
     #[test]

@@ -384,3 +384,63 @@ code {
   font-size: 0.8125em;
   overflow-wrap: anywhere;
 }
+
+/* ---- claim status ---- */
+
+.badge-claim-unclaimed,
+.badge-claim-revoked {
+  background: var(--border);
+  color: var(--muted);
+}
+
+.badge-claim-pending,
+.badge-claim-claimed {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+/* ---- LAN access ---- */
+
+.join {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/*
+ * The QR keeps a white background whatever the colour scheme: a dark-on-dark
+ * code does not scan, and this is meant to be read by a phone camera.
+ */
+.qr {
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: #ffffff;
+  padding: 0.5rem;
+}
+
+.join-url {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+label.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+label.inline > span {
+  font-weight: 400;
+}
+
+select {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--bg);
+  color: var(--fg);
+  width: 100%;
+}

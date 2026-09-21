@@ -14,6 +14,7 @@
 //! - identifiers ([`id`]) and time/timezone handling ([`time`])
 //! - meeting lifecycle, configuration and the lock rule ([`meeting`])
 //! - the participant roster ([`participant`])
+//! - participant sessions and the claim model ([`session`], [`token`])
 //! - note versioning and audit policy ([`service`], [`audit`])
 //! - the persistence port ([`port`]) that `app-db` implements
 //!
@@ -21,10 +22,14 @@
 //! has no SQLite and no transport dependency; persistence arrives through
 //! [`port::Database`].
 //!
-//! Status: Phase 1, step 3. Identifiers, time, the lifecycle, authorization,
+//! Status: Phase 1, step 6. Identifiers, time, the lifecycle, authorization,
 //! note versioning, audit policy and the mutation boundary are implemented, and
-//! so are meeting creation/configuration and the participant roster.
-//! Session/token resolution belongs to the transport layer and is not here.
+//! so are meeting creation/configuration, the participant roster, and the
+//! join-token and identity-claim rules.
+//!
+//! Resolving a presented credential is still the transport's job: this crate
+//! holds only [`token::TokenHash`], never a token, and has no way to generate or
+//! hash one (architecture rules section 14.1, ADR-0016).
 
 #![forbid(unsafe_code)]
 
@@ -37,8 +42,10 @@ pub mod meeting;
 pub mod participant;
 pub mod port;
 pub mod service;
+pub mod session;
 mod text;
 pub mod time;
+pub mod token;
 
 pub use actor::Actor;
 pub use audit::{AuditAction, AuditEntry, AuditTarget};
@@ -51,11 +58,14 @@ pub use id::{
 pub use meeting::{Meeting, MeetingConfiguration, MeetingStatus};
 pub use participant::{ParticipantDetails, MAX_PARTICIPANTS, MIN_PARTICIPANTS};
 pub use port::{
-    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NoteRow,
+    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NewSession, NoteRow,
     ParticipantRow,
 };
 pub use service::{
-    Domain, MeetingCreated, MeetingTransitioned, MeetingUpdated, NoteWritten, ParticipantAdded,
-    ParticipantRemoved, ParticipantUpdated, WriteNote,
+    Domain, IdentityClaimed, JoinTokenIssued, MeetingCreated, MeetingTransitioned, MeetingUpdated,
+    NoteWritten, ParticipantAdded, ParticipantRemoved, ParticipantUpdated, SessionChanged,
+    WriteNote,
 };
+pub use session::{ClaimStatus, SessionBinding};
 pub use time::{MeetingDate, MeetingTime, MeetingTimeZone, TimeError, UtcTimestamp};
+pub use token::{TokenError, TokenHash};

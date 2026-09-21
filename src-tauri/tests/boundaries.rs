@@ -59,6 +59,39 @@ fn code_only(contents: &str) -> String {
     kept.join("\n")
 }
 
+/// The code that ships, with comments and the trailing test module removed.
+///
+/// The boundary guards are about what the shipped transport *does*. A test
+/// fixture is neither: `app-server` deliberately hashes `"'; DROP TABLE
+/// meetings; --"` to prove that a hostile token is a lookup that matches
+/// nothing, and that string is evidence the boundary holds rather than evidence
+/// it was crossed.
+///
+/// Every file in this repository places its `#[cfg(test)]` module last and has
+/// exactly one, which this asserts rather than assumes - if that ever stops
+/// being true, this returns a wrong answer silently, so it should fail loudly
+/// instead.
+fn shipped_code(path: &Path, contents: &str) -> String {
+    let markers = contents
+        .lines()
+        .filter(|line| line.trim_start().starts_with("#[cfg(test)]"))
+        .count();
+    assert!(
+        markers <= 1,
+        "{}: expected at most one `#[cfg(test)]` module, found {markers}. \
+         The boundary scan truncates at the first one and would miss code after it.",
+        path.display()
+    );
+
+    let shipped: String = contents
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with("#[cfg(test)]"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    code_only(&shipped)
+}
+
 /// Every file under `directory` with one of `extensions`, sorted for a stable
 /// failure message.
 fn sources(directory: &Path, extensions: &[&str]) -> Vec<PathBuf> {
@@ -119,13 +152,19 @@ fn the_tauri_crate_cannot_execute_sql() {
 }
 
 #[test]
-fn no_sql_appears_in_the_tauri_crate_or_the_host_ui() {
+fn no_sql_appears_in_either_transport_or_the_host_ui() {
     // A belt-and-braces check on top of the dependency graph: a raw statement
-    // passed to something else, or assembled in the frontend, would still be a
+    // passed to something else, or assembled in a frontend, would still be a
     // boundary violation.
+    //
+    // Both transports are scanned. `app-server` is the one that faces untrusted
+    // input, so leaving it out would have left the gap in the crate where it
+    // matters most.
     let root = repository_root();
     let mut files = sources(&root.join("src-tauri/src"), &["rs"]);
+    files.extend(sources(&root.join("crates/app-server/src"), &["rs"]));
     files.extend(sources(&root.join("apps/host-ui/src"), &["ts", "tsx"]));
+    files.extend(sources(&root.join("apps/lan-ui/src"), &["ts", "tsx"]));
 
     // Uppercase, with a trailing space, so ordinary prose ("select a meeting",
     // "updated_at") does not trip it.
@@ -140,11 +179,60 @@ fn no_sql_appears_in_the_tauri_crate_or_the_host_ui() {
     ];
 
     for file in files {
-        let contents = code_only(&read(&file));
+        let contents = shipped_code(&file, &read(&file));
         for statement in statements {
             assert!(
                 !contents.contains(statement),
                 "{} contains `{statement}`: SQL belongs in app-db",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn no_transport_reaches_for_a_database_primitive() {
+    // The gap the SQL scan alone leaves open.
+    //
+    // `Db::write`, `Db::write_with` and `Db::with_writer` are public, and both
+    // transports hold a `Db`. The closure they pass receives a transaction
+    // whose methods can be called *without naming its type*, so the absence of
+    // a `rusqlite` dependency does not by itself stop a transport from writing:
+    //
+    //     db.write(|tx| { tx.execute("...", [])?; Ok(()) })
+    //
+    // That would bypass `Domain` entirely - no authorization proof, no lock
+    // check, no audit record - and every other test in this suite would still
+    // pass. So the primitives are named here and forbidden outright.
+    //
+    // Reads are no exception. A transport reads through the typed query types
+    // (`HostQueries`, `ParticipantQueries`), which is what keeps the two
+    // audiences separated (ADR-0014); reaching past them to a raw connection
+    // would defeat that just as surely.
+    let root = repository_root();
+    let mut files = sources(&root.join("src-tauri/src"), &["rs"]);
+    files.extend(sources(&root.join("crates/app-server/src"), &["rs"]));
+
+    let primitives = [
+        ".write(",
+        ".write_with(",
+        ".with_writer(",
+        ".read(",
+        "Transaction",
+        "Connection",
+        "execute(",
+        "query_row(",
+        "query_map(",
+        ".prepare(",
+    ];
+
+    for file in files {
+        let contents = shipped_code(&file, &read(&file));
+        for primitive in primitives {
+            assert!(
+                !contents.contains(primitive),
+                "{} uses `{primitive}`: a transport must reach the database only \
+                 through app-core::Domain or a typed query, never a raw primitive",
                 file.display()
             );
         }
@@ -208,8 +296,8 @@ fn every_registered_command_is_reachable_from_the_host_ui_gateway() {
 
     assert_eq!(
         registered.len(),
-        10,
-        "expected the ten step-4 commands, found {registered:?}"
+        17,
+        "every registered command must be reachable, found {registered:?}"
     );
 
     for command in registered {
@@ -306,36 +394,151 @@ fn no_command_offers_to_change_an_audit_entry() {
 }
 
 // ---------------------------------------------------------------------------
-// Scope: the LAN transport is not in this step
+// Scope: realtime and remote participation are later steps
 // ---------------------------------------------------------------------------
 
 #[test]
-fn no_lan_transport_has_crept_into_the_host_shell() {
-    // Step 4 is the Host surface only. These names are the ones that would
-    // appear first if the LAN server, its join token or its sockets had started
-    // to leak into the shell ahead of their own step.
+fn no_realtime_or_relay_code_has_crept_in() {
+    // The LAN transport arrived in step 6; WebSocket, presence and remote
+    // participation did not. These are the names that would appear first if a
+    // later step had started to leak backwards, and the "no cloud, no relay"
+    // promise had started to erode.
     let root = repository_root();
     let mut files = sources(&root.join("src-tauri/src"), &["rs"]);
+    files.extend(sources(&root.join("crates/app-server/src"), &["rs"]));
     files.extend(sources(&root.join("apps/host-ui/src"), &["ts", "tsx"]));
+    files.extend(sources(&root.join("apps/lan-ui/src"), &["ts", "tsx"]));
 
     for file in files {
         let contents = code_only(&read(&file));
         for forbidden in [
-            "axum",
             "WebSocket",
             "websocket",
-            "join_token",
-            "joinToken",
-            "qrcode",
-            "QrCode",
-            "listen(",
-            "TcpListener",
+            "tokio_tungstenite",
+            "EventSource",
+            "setInterval",
+            // No cloud, relay, tunnel or public hosting. Ever (PRD section 4).
+            // These are outbound-client and port-opening names: the absence of
+            // a remote *origin* is enforced separately, by the content security
+            // policy the server sends and the tests over it.
+            "reqwest",
+            "ureq",
+            "hyper::Client",
+            "ngrok",
+            "upnp",
+            "UPnP",
         ] {
             assert!(
                 !contents.contains(forbidden),
-                "{} mentions `{forbidden}`: the LAN transport is a later step",
+                "{} mentions `{forbidden}`: out of scope for this step",
                 file.display()
             );
         }
     }
+}
+
+#[test]
+fn the_lan_transport_cannot_execute_sql_either() {
+    // The same guarantee `src-tauri` has, for the crate that faces untrusted
+    // input: `app-server` holds `app-db` for its query types, and no SQLite
+    // driver, so there is no type in scope that can run a statement.
+    let manifest = read(&repository_root().join("crates/app-server/Cargo.toml"));
+    let dependencies = manifest
+        .split("[dependencies]")
+        .nth(1)
+        .expect("a [dependencies] section")
+        .split(
+            "
+[",
+        )
+        .next()
+        .expect("the section ends");
+
+    for forbidden in ["rusqlite", "r2d2", "refinery", "libsqlite3"] {
+        assert!(
+            !dependencies.contains(forbidden),
+            "app-server must not depend on {forbidden}: SQL belongs in app-db"
+        );
+    }
+}
+
+#[test]
+fn the_lan_server_embeds_only_the_participant_bundle() {
+    // `apps/host-ui` is the Host's own window and talks to Tauri commands a
+    // browser has no business reaching. It must never be served over the
+    // network (CLAUDE.md, the three UI bundles).
+    // Comments stripped: this file's documentation explains *why* host-ui is
+    // never embedded, and saying so must not read as doing so.
+    let assets = code_only(&read(
+        &repository_root().join("crates/app-server/src/assets.rs"),
+    ));
+
+    let folders: Vec<&str> = assets
+        .lines()
+        .filter(|line| line.trim_start().starts_with("#[folder"))
+        .collect();
+
+    assert_eq!(folders.len(), 1, "exactly one embedded folder: {folders:?}");
+    assert!(
+        folders[0].contains("apps/lan-ui/dist"),
+        "the embedded bundle must be the participant one: {}",
+        folders[0]
+    );
+    assert!(!assets.contains("host-ui"), "host-ui must not be embedded");
+}
+
+#[test]
+fn the_participant_ui_never_reaches_for_tauri() {
+    // The LAN bundle runs in someone else's browser. It has no Tauri API, and
+    // asking for one would mean a capability had been confused for a transport.
+    let root = repository_root();
+    let gateway = root.join("apps/lan-ui/src/api/lanApi.ts");
+    assert!(
+        gateway.is_file(),
+        "the single LAN gateway module is missing"
+    );
+
+    let mut callers = Vec::new();
+    for file in sources(&root.join("apps/lan-ui/src"), &["ts", "tsx"]) {
+        let contents = read(&file);
+        assert!(
+            !contents.contains("@tauri-apps"),
+            "{} imports the Tauri API",
+            file.display()
+        );
+        if contents.contains("fetch(") {
+            callers.push(file);
+        }
+    }
+
+    assert_eq!(
+        callers,
+        vec![gateway],
+        "only apps/lan-ui/src/api/lanApi.ts may call fetch"
+    );
+}
+
+#[test]
+fn a_session_token_is_never_written_to_storage_outside_one_module() {
+    // The participant's only credential (ADR-0002 rule 6). One module reads and
+    // writes it, so "where does the token live" has one answer.
+    let root = repository_root();
+    let keeper = root.join("apps/lan-ui/src/api/session.ts");
+
+    let mut touching = Vec::new();
+    for file in sources(&root.join("apps/lan-ui/src"), &["ts", "tsx"]) {
+        let contents = code_only(&read(&file));
+        if contents.contains("sessionStorage")
+            || contents.contains("localStorage")
+            || contents.contains("document.cookie")
+        {
+            touching.push(file);
+        }
+    }
+
+    assert_eq!(
+        touching,
+        vec![keeper],
+        "only apps/lan-ui/src/api/session.ts may touch browser storage"
+    );
 }

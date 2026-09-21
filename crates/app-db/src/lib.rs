@@ -39,25 +39,38 @@
 //! # Two sides, one crate
 //!
 //! [`repository`] is the write adapter behind the domain's mutation boundary;
-//! [`query`] answers what the Host UI displays. Reads deliberately do not travel
-//! through the domain (ADR-0014), but both halves are the same kind of thing:
-//! mechanics with no rules in them.
+//! [`query`] answers what the Host UI displays and [`participant_query`] what a
+//! LAN participant may see. Reads deliberately do not travel through the domain
+//! (ADR-0014), but every half is the same kind of thing: mechanics with no rules
+//! in them.
 //!
-//! Status: Phase 1, step 4. Schema, migrations, pool, transaction helpers, the
-//! domain-port adapter and the Host read queries exist. A participant-facing
-//! query type arrives with the LAN transport, and is deliberately not these.
+//! The two read types are separate on purpose. The Host may see everything in
+//! their own database and a participant may not, so reusing one convenient read
+//! model for both audiences is how a participant ends up holding something only
+//! the Host should have (architecture rules section 16).
+//!
+//! [`session_store`] is neither: it answers "who is asking" by resolving a
+//! credential hash, and its output becomes an `Actor`.
+//!
+//! Status: Phase 1, step 6. Schema, migrations, pool, transaction helpers, the
+//! domain-port adapter, the Host read queries, the participant read queries and
+//! credential resolution all exist.
 
 #![forbid(unsafe_code)]
 
 pub mod error;
 pub mod migrations;
+pub mod participant_query;
 pub mod pool;
 pub mod query;
 pub mod repository;
+pub mod session_store;
 pub mod sql;
 
 pub use error::{DbError, DbResult};
+pub use participant_query::{ClaimableIdentity, JoinableMeeting, OwnIdentity, ParticipantQueries};
 pub use pool::Db;
 pub use query::{AuditEntryView, HostQueries, MeetingDetail, MeetingSummary, ParticipantSummary};
 pub use repository::DbTx;
+pub use session_store::{JoinTarget, SessionStore};
 pub use sql::Sql;

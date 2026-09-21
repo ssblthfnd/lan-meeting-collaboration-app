@@ -25,7 +25,7 @@ use app_core::meeting::{MeetingConfiguration, MeetingStatus};
 use app_core::participant::ParticipantDetails;
 use app_core::service::{
     MeetingCreated, MeetingTransitioned, MeetingUpdated, ParticipantAdded, ParticipantRemoved,
-    ParticipantUpdated,
+    ParticipantUpdated, SessionChanged,
 };
 use app_core::time::{MeetingDate, MeetingTime, MeetingTimeZone, UtcTimestamp};
 use app_db::query::{AuditEntryView, MeetingDetail, MeetingSummary, ParticipantSummary};
@@ -336,6 +336,12 @@ pub struct ParticipantSummaryDto {
     pub department: Option<String>,
     pub position: Option<String>,
     pub meeting_role: Option<String>,
+    /// `UNCLAIMED`, `PENDING`, `CLAIMED` or `REVOKED`, derived from
+    /// `participant_sessions` (ADR-0008).
+    ///
+    /// `PENDING` means someone has joined and is working; it does **not** mean
+    /// they are waiting for permission (ADR-0016).
+    pub claim_status: &'static str,
     pub created_at: UtcTimestamp,
 }
 
@@ -347,7 +353,65 @@ impl From<ParticipantSummary> for ParticipantSummaryDto {
             department: row.details.department,
             position: row.details.position,
             meeting_role: row.details.meeting_role,
+            claim_status: row.claim_status.as_str(),
             created_at: row.created_at,
+        }
+    }
+}
+
+/// A join URL and the QR code for it.
+///
+/// The plaintext token appears here and nowhere else: it is shown to the Host
+/// once so they can display or copy it, and only its hash was stored
+/// (PRD 22.2). Re-issuing produces a different one and invalidates this.
+#[derive(Debug, Clone, Serialize)]
+pub struct JoinTokenIssuedDto {
+    pub meeting_id: MeetingId,
+    /// The full URL a participant opens, assembled by the transport so the text
+    /// and the QR can never disagree.
+    pub join_url: String,
+    pub qr: crate::qr::QrMatrix,
+    /// True when this replaced an earlier token, so the Host can be told that
+    /// any URL already handed out has stopped working.
+    pub replaced_previous: bool,
+    pub at: UtcTimestamp,
+}
+
+/// Outcome of a Host action on a participant's session.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionChangedDto {
+    pub participant_id: ParticipantId,
+    pub at: UtcTimestamp,
+}
+
+impl From<SessionChanged> for SessionChangedDto {
+    fn from(outcome: SessionChanged) -> Self {
+        Self {
+            participant_id: outcome.participant_id,
+            at: outcome.at,
+        }
+    }
+}
+
+/// One address the Host could advertise in the join URL.
+#[derive(Debug, Clone, Serialize)]
+pub struct LanInterfaceDto {
+    pub name: String,
+    pub address: String,
+    /// Reaches only this machine. Marked so the Host UI can say so rather than
+    /// offering an address a participant cannot use (architecture rules 4).
+    pub is_loopback: bool,
+    /// A private-range address, which is what a LAN normally uses.
+    pub is_private: bool,
+}
+
+impl From<app_server::Interface> for LanInterfaceDto {
+    fn from(interface: app_server::Interface) -> Self {
+        Self {
+            name: interface.name,
+            address: interface.address.to_string(),
+            is_loopback: interface.is_loopback,
+            is_private: interface.is_private,
         }
     }
 }

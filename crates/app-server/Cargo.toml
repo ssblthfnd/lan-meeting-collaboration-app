@@ -1,6 +1,6 @@
 [package]
 name = "app-server"
-description = "LAN HTTP + WebSocket transport for participants. Untrusted-input boundary."
+description = "LAN HTTP transport for participants. Untrusted-input boundary."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,3 +12,20 @@ authors.workspace = true
 app-core = { workspace = true }
 app-db = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower-http = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+rust-embed = { workspace = true }
+local-ip-address = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# Driving the router with `oneshot`, so the HTTP contract is tested without
+# binding a port.
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }

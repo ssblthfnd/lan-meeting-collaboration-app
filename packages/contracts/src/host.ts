@@ -34,6 +34,7 @@ import type {
   IsoTime,
   MeetingId,
   MeetingStatus,
+  ParticipantClaimStatus,
   ParticipantId,
 } from './index';
 
@@ -56,11 +57,15 @@ export type AuditAction =
   | 'participant.added'
   | 'participant.updated'
   | 'participant.removed'
+  | 'meeting.join_token_issued'
+  | 'participant.claimed'
+  | 'participant.claim_approved'
+  | 'participant.session_revoked'
   | 'note.created'
   | 'note.updated';
 
 /** What an audit record was about. */
-export type AuditTargetType = 'meeting' | 'participant' | 'note';
+export type AuditTargetType = 'meeting' | 'participant' | 'session' | 'note';
 
 /**
  * One audit record, as the Host audit view receives it.
@@ -172,8 +177,8 @@ export interface MeetingTransitioned {
  * One participant of a meeting.
  *
  * An identity the Host prepared, not an account and not a credential. Whether
- * someone has claimed it is a separate, derived question (ADR-0008) that this
- * step does not ask.
+ * someone is currently holding it is a separate, derived question, answered by
+ * {@link ParticipantSummary.claim_status} (ADR-0008).
  */
 export interface ParticipantSummary {
   readonly id: ParticipantId;
@@ -181,6 +186,14 @@ export interface ParticipantSummary {
   readonly department: string | null;
   readonly position: string | null;
   readonly meeting_role: string | null;
+  /**
+   * Derived from `participant_sessions`, never stored (ADR-0008).
+   *
+   * `PENDING` means someone has joined and is working - **not** that they are
+   * waiting for permission. Approval is acknowledgement, not a gate, so a UI
+   * must not present `PENDING` as something to be unblocked (ADR-0016).
+   */
+  readonly claim_status: ParticipantClaimStatus;
   readonly created_at: Iso8601Utc;
 }
 
@@ -293,6 +306,28 @@ export type HostError =
       readonly detected: MeetingStatus;
     }
   | {
+      readonly kind: 'meeting_not_open';
+      readonly category: 'lifecycle';
+      readonly message: string;
+      readonly meeting_id: MeetingId;
+      /** The status actually found. */
+      readonly detected: MeetingStatus;
+    }
+  | {
+      readonly kind: 'identity_already_claimed';
+      readonly category: 'conflict';
+      readonly message: string;
+      readonly meeting_id: MeetingId;
+      /** Which identity, so the roster can point at the right row. */
+      readonly participant_id: ParticipantId;
+    }
+  | {
+      readonly kind: 'session_not_found';
+      readonly category: 'not_found';
+      readonly message: string;
+      readonly meeting_id: MeetingId;
+    }
+  | {
       readonly kind: 'participant_not_found';
       readonly category: 'not_found';
       readonly message: string;
@@ -325,3 +360,73 @@ export type HostError =
       readonly category: 'unexpected';
       readonly message: string;
     };
+
+/* -------------------------------------------------------------------------
+ * LAN access
+ *
+ * The Host's side of the LAN server: starting it, choosing which address to
+ * advertise, and issuing the join token. What a *participant* sees is in
+ * `lan.ts` and is deliberately a different set of shapes (ADR-0014).
+ * ------------------------------------------------------------------------- */
+
+/** Whether the LAN server is running, and where. */
+export interface LanServerStatus {
+  readonly running: boolean;
+  /** The port actually bound, which is not always the one requested. */
+  readonly port: number | null;
+  /**
+   * Whether the participant bundle was compiled into this binary.
+   *
+   * Surfaced so a developer running a Rust-only build is told why the join page
+   * is blank, instead of debugging the network.
+   */
+  readonly ui_bundled: boolean;
+}
+
+/**
+ * One local address the Host could advertise.
+ *
+ * The Host chooses: a laptop may be on Wi-Fi, Ethernet and a VPN at once, and
+ * only the person in the room knows which network the participants are on.
+ * `127.0.0.1` must never be assumed reachable by a participant
+ * (architecture rules section 4), which is what `is_loopback` is for.
+ */
+export interface LanInterface {
+  readonly name: string;
+  readonly address: string;
+  readonly is_loopback: boolean;
+  readonly is_private: boolean;
+}
+
+/**
+ * A QR code as a square grid of modules.
+ *
+ * `modules` is row-major and exactly `size * size` long; `true` is a dark
+ * square. A grid rather than an image or an SVG string, so the UI draws
+ * `<rect>` elements and never injects markup (ADR-0017).
+ */
+export interface QrMatrix {
+  readonly size: number;
+  readonly modules: readonly boolean[];
+}
+
+/**
+ * A freshly issued join token, as a URL and a QR code.
+ *
+ * The plaintext token appears here and nowhere else: the backend stored only
+ * its hash (PRD section 22.2). Issuing again produces a different one and
+ * invalidates this, which is what `replaced_previous` warns about.
+ */
+export interface JoinTokenIssued {
+  readonly meeting_id: MeetingId;
+  readonly join_url: string;
+  readonly qr: QrMatrix;
+  readonly replaced_previous: boolean;
+  readonly at: Iso8601Utc;
+}
+
+/** Outcome of a Host action on a participant's session. */
+export interface SessionChanged {
+  readonly participant_id: ParticipantId;
+  readonly at: Iso8601Utc;
+}

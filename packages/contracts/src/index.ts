@@ -5,8 +5,8 @@
  * a boundary:
  *
  * - `host.ts`           - Host UI <-> Tauri command DTOs        (Phase 1, step 4)
- * - `api.ts`            - LAN HTTP request/response DTOs        (LAN transport)
- * - `ws-events.ts`      - audience-scoped WebSocket events      (LAN transport)
+ * - `lan.ts`            - LAN participant <-> HTTP DTOs         (Phase 1, step 6)
+ * - `ws-events.ts`      - audience-scoped WebSocket events      (realtime)
  * - `form-payload.ts`   - immutable metadata baked into a remote form
  * - `submission.v1.ts`  - remote submission schema, versioned
  *
@@ -24,6 +24,7 @@
  */
 
 export type * from './host';
+export type * from './lan';
 
 /** Maximum participants per meeting (PRD section 7). */
 export const MAX_PARTICIPANTS = 99;

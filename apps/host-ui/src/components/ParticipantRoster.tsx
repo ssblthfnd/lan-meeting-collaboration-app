@@ -4,6 +4,7 @@ import type {
   HostError,
   MeetingDetail,
   MeetingId,
+  ParticipantClaimStatus,
   ParticipantDetailsInput,
   ParticipantId,
   ParticipantSummary,
@@ -38,6 +39,25 @@ const EMPTY: ParticipantDetailsInput = {
 function optional(value: string): string | null {
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * How each claim state reads to the Host.
+ *
+ * `PENDING` is phrased as *joined*, because that is what it is: the participant
+ * is in the meeting and working. Approval is acknowledgement, not a gate, so
+ * this must never read as "waiting for you" (ADR-0016).
+ */
+const CLAIM_LABEL: Record<ParticipantClaimStatus, string> = {
+  UNCLAIMED: 'Not joined',
+  PENDING: 'Joined',
+  CLAIMED: 'Joined · checked',
+  REVOKED: 'Released',
+};
+
+/** Whether a live session currently holds this identity. */
+function isHeld(status: ParticipantClaimStatus): boolean {
+  return status === 'PENDING' || status === 'CLAIMED';
 }
 
 function ParticipantFields({
@@ -196,7 +216,12 @@ export function ParticipantRoster({
               ) : (
                 <div className="row-item">
                   <div>
-                    <strong>{participant.name}</strong>
+                    <strong>{participant.name}</strong>{' '}
+                    <span
+                      className={`badge badge-claim-${participant.claim_status.toLowerCase()}`}
+                    >
+                      {CLAIM_LABEL[participant.claim_status]}
+                    </span>
                     <span className="card-meta">
                       {[
                         participant.department,
@@ -207,25 +232,68 @@ export function ParticipantRoster({
                         .join(' · ') || 'No further details'}
                     </span>
                   </div>
-                  {editable && (
-                    <div className="actions">
-                      <button type="button" onClick={() => startEditing(participant)} disabled={busy}>
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={busy}
-                        onClick={() =>
-                          void mutate(() =>
-                            hostApi.removeParticipant(meetingId, participant.id),
-                          )
-                        }
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  )}
+                  <div className="actions">
+                    {editable && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => startEditing(participant)}
+                          disabled={busy}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="danger"
+                          disabled={busy}
+                          onClick={() =>
+                            void mutate(() =>
+                              hostApi.removeParticipant(meetingId, participant.id),
+                            )
+                          }
+                        >
+                          Remove
+                        </button>
+                      </>
+                    )}
+
+                    {/* Session controls, available once someone has joined.
+                        They are not roster edits, so they stay available after
+                        the meeting opens - which is exactly when they matter.
+                        "Check" only records that the Host saw the claim; it
+                        grants nothing (ADR-0016). "Release" ends the session so
+                        the name can be claimed again, which is what makes
+                        first-claim-wins workable in a room (ADR-0002 rule 5). */}
+                    {isHeld(participant.claim_status) && (
+                      <>
+                        {participant.claim_status === 'PENDING' && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() =>
+                              void mutate(() =>
+                                hostApi.approveParticipantClaim(meetingId, participant.id),
+                              )
+                            }
+                          >
+                            Check
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="danger"
+                          disabled={busy}
+                          onClick={() =>
+                            void mutate(() =>
+                              hostApi.revokeParticipantSession(meetingId, participant.id),
+                            )
+                          }
+                        >
+                          Release name
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
             </li>

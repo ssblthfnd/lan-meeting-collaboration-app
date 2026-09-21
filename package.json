@@ -29,7 +29,7 @@
     "fmt:rs:check": "cargo fmt --all -- --check",
     "lint:rs": "cargo clippy --workspace --all-targets -- -D warnings",
     "test:rs": "cargo test --workspace",
-    "check": "npm run typecheck && npm run fmt:rs:check && npm run lint:rs && npm run test:rs"
+    "check": "npm run build:lan && npm run typecheck && npm run fmt:rs:check && npm run lint:rs && npm run test:rs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0",

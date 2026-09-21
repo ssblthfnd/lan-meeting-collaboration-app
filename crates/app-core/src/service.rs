@@ -40,13 +40,17 @@ use serde_json::{json, Value};
 
 use crate::actor::Actor;
 use crate::audit::{AuditAction, AuditEntry, AuditTarget};
-use crate::authz::{authorize, Operation};
+use crate::authz::{authorize, Authorized, Operation};
 use crate::error::{DomainError, DomainResult};
-use crate::id::{MeetingId, NoteId, NoteVersionId, ParticipantId};
+use crate::id::{MeetingId, NoteId, NoteVersionId, ParticipantId, SessionId};
 use crate::meeting::{MeetingConfiguration, MeetingStatus};
 use crate::participant::{ensure_room_for_one_more, ParticipantDetails};
-use crate::port::{Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant};
+use crate::port::{
+    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NewSession,
+};
+use crate::session::SessionBinding;
 use crate::time::UtcTimestamp;
+use crate::token::TokenHash;
 
 /// Write (create or replace) one participant's note.
 ///
@@ -100,6 +104,35 @@ pub struct ParticipantRemoved {
     pub participant_id: ParticipantId,
     /// Roster size after the removal.
     pub roster_size: i64,
+    pub at: UtcTimestamp,
+}
+
+/// Outcome of issuing a join token.
+///
+/// Carries no token: the plaintext is the transport's, returned to the Host
+/// once and never persisted (PRD 22.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JoinTokenIssued {
+    pub meeting_id: MeetingId,
+    /// True when this replaced a previous token, invalidating the old URL.
+    pub replaced_previous: bool,
+    pub at: UtcTimestamp,
+}
+
+/// Outcome of claiming an identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdentityClaimed {
+    pub session_id: SessionId,
+    pub meeting_id: MeetingId,
+    pub participant_id: ParticipantId,
+    pub at: UtcTimestamp,
+}
+
+/// Outcome of a Host action on someone's session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionChanged {
+    pub session_id: SessionId,
+    pub participant_id: ParticipantId,
     pub at: UtcTimestamp,
 }
 
@@ -429,6 +462,262 @@ impl<D: Database> Domain<D> {
         committed(outcome, "removing a participant")
     }
 
+    /// Mint a join token for an `OPEN` meeting. Host only.
+    ///
+    /// The token itself is generated and hashed by the transport; only the
+    /// [`TokenHash`] arrives here, so this method cannot persist a secret even
+    /// if a caller tried to hand it one (PRD 22.2).
+    ///
+    /// Issuing again **replaces** the stored hash, so the previous URL stops
+    /// resolving to this meeting. That is the whole of token rotation: there is
+    /// no revocation list because there is only ever one live token.
+    ///
+    /// Locking a meeting does **not** clear the hash. The join URL stops working
+    /// because every request re-reads the meeting's status, which is the check
+    /// that has to hold anyway - clearing the column would be a second mechanism
+    /// that could disagree with the first (ADR-0016).
+    pub fn issue_join_token(
+        &self,
+        actor: &Actor,
+        meeting_id: MeetingId,
+        token_hash: &TokenHash,
+    ) -> DomainResult<JoinTokenIssued> {
+        let mut outcome = None;
+
+        self.db.transaction(&mut |tx: &dyn DomainTx| {
+            // 1. Current state.
+            let meeting = tx
+                .find_meeting(meeting_id)?
+                .ok_or(DomainError::MeetingNotFound { meeting_id })?;
+
+            // 2. Authorization.
+            let proof = authorize(actor, meeting_id, Operation::IssueJoinToken)?;
+
+            // 3. The lock, then the rule that only an open meeting is joinable.
+            meeting.ensure_mutable()?;
+            meeting.ensure_open()?;
+
+            // 4. Mutation and audit.
+            let at = UtcTimestamp::now();
+            let replaced_previous = meeting.has_join_token;
+            tx.set_join_token_hash(&proof, token_hash, at)?;
+            tx.insert_audit(
+                &proof,
+                &AuditEntry {
+                    action: AuditAction::MeetingJoinTokenIssued,
+                    target: AuditTarget::Meeting(meeting_id),
+                    // Records that a token was issued and whether it displaced
+                    // one. Never the token, and never its hash: an audit trail
+                    // is read by people, and a credential does not belong in it.
+                    metadata: json!({ "replaced_previous": replaced_previous }),
+                    at,
+                },
+            )?;
+
+            outcome = Some(JoinTokenIssued {
+                meeting_id,
+                replaced_previous,
+                at,
+            });
+            Ok(())
+        })?;
+
+        committed(outcome, "issuing a join token")
+    }
+
+    /// Bind a participant identity to a new session (ADR-0002).
+    ///
+    /// The actor is an [`Actor::Claimant`], established by the transport from a
+    /// valid join token. `token_hash` is the hash of a session token the
+    /// transport generated and will return to the browser exactly once.
+    ///
+    /// First-claim-wins is enforced twice, for the reason ADR-0011 gives for
+    /// every other invariant: the live session is read inside this transaction,
+    /// and the partial unique index refuses a second live row regardless. A
+    /// constraint violation is mapped back to the same refusal, so a lost race
+    /// and a plain second attempt look identical to the caller.
+    ///
+    /// A claim is usable immediately. `approved_at` stays null until the Host
+    /// acknowledges it, and no authorization decision consults it (ADR-0016).
+    pub fn claim_identity(
+        &self,
+        actor: &Actor,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+        token_hash: &TokenHash,
+    ) -> DomainResult<IdentityClaimed> {
+        let mut outcome = None;
+
+        self.db.transaction(&mut |tx: &dyn DomainTx| {
+            // 1. Current state.
+            let meeting = tx
+                .find_meeting(meeting_id)?
+                .ok_or(DomainError::MeetingNotFound { meeting_id })?;
+
+            // 2. Authorization. A claimant may claim the one identity it names.
+            let proof = authorize(
+                actor,
+                meeting_id,
+                Operation::ClaimIdentity { participant_id },
+            )?;
+
+            // 3. The lock, then the rule that only an open meeting is joinable.
+            meeting.ensure_mutable()?;
+            meeting.ensure_open()?;
+
+            // 4. Validation: the identity must exist in this meeting and must
+            //    not already be held.
+            if tx.find_participant(meeting_id, participant_id)?.is_none() {
+                return Err(DomainError::ParticipantNotFound {
+                    meeting_id,
+                    participant_id,
+                });
+            }
+            if tx.find_live_session(meeting_id, participant_id)?.is_some() {
+                return Err(DomainError::IdentityAlreadyClaimed {
+                    meeting_id,
+                    participant_id,
+                });
+            }
+
+            // 5. Mutation and audit.
+            let at = UtcTimestamp::now();
+            let session_id = SessionId::new();
+            tx.insert_session(
+                &proof,
+                &NewSession {
+                    id: session_id,
+                    participant_id,
+                    token_hash: token_hash.clone(),
+                    at,
+                },
+            )
+            .map_err(|error| claim_conflict(error, meeting_id, participant_id))?;
+
+            tx.insert_audit(
+                &proof,
+                &AuditEntry {
+                    action: AuditAction::ParticipantClaimed,
+                    target: AuditTarget::Session(session_id),
+                    metadata: json!({
+                        "participant_id": participant_id.to_storage(),
+                        "approved": false,
+                    }),
+                    at,
+                },
+            )?;
+
+            outcome = Some(IdentityClaimed {
+                session_id,
+                meeting_id,
+                participant_id,
+                at,
+            });
+            Ok(())
+        })?;
+
+        committed(outcome, "claiming an identity")
+    }
+
+    /// Acknowledge a participant's claim. Host only.
+    ///
+    /// Sets `approved_at`. It grants nothing: the session could already act, and
+    /// still can (ADR-0016). This exists so the Host can mark a roster as
+    /// checked, not so they can let someone in.
+    pub fn approve_claim(
+        &self,
+        actor: &Actor,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+    ) -> DomainResult<SessionChanged> {
+        self.act_on_session(
+            actor,
+            meeting_id,
+            participant_id,
+            Operation::ApproveClaim { participant_id },
+            AuditAction::ParticipantClaimApproved,
+            &|tx, proof, session, at| tx.approve_session(proof, session.session_id, at),
+        )
+    }
+
+    /// End a participant's session. Host only.
+    ///
+    /// The identity becomes claimable again and the revoked row stays as
+    /// history. This is what makes first-claim-wins operable: an identity taken
+    /// by the wrong person, or stranded on a closed laptop, can be freed
+    /// (ADR-0002 rule 5).
+    pub fn revoke_session(
+        &self,
+        actor: &Actor,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+    ) -> DomainResult<SessionChanged> {
+        self.act_on_session(
+            actor,
+            meeting_id,
+            participant_id,
+            Operation::RevokeSession { participant_id },
+            AuditAction::ParticipantSessionRevoked,
+            &|tx, proof, session, at| tx.revoke_session(proof, session.session_id, at),
+        )
+    }
+
+    /// The shared pipeline behind approving and revoking.
+    ///
+    /// Both load the live session inside the transaction, so neither can act on
+    /// a session that was revoked a moment earlier.
+    fn act_on_session(
+        &self,
+        actor: &Actor,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+        operation: Operation,
+        action: AuditAction,
+        write: SessionWrite<'_>,
+    ) -> DomainResult<SessionChanged> {
+        let mut outcome = None;
+
+        self.db.transaction(&mut |tx: &dyn DomainTx| {
+            // 1. Current state.
+            let meeting = tx
+                .find_meeting(meeting_id)?
+                .ok_or(DomainError::MeetingNotFound { meeting_id })?;
+
+            // 2. Authorization.
+            let proof = authorize(actor, meeting_id, operation)?;
+
+            // 3. The lock. A locked meeting is finished, sessions included.
+            meeting.ensure_mutable()?;
+
+            // 4. Validation: there must be a live session to act on.
+            let session = tx
+                .find_live_session(meeting_id, participant_id)?
+                .ok_or(DomainError::SessionNotFound { meeting_id })?;
+
+            // 5. Mutation and audit.
+            let at = UtcTimestamp::now();
+            write(tx, &proof, session, at)?;
+            tx.insert_audit(
+                &proof,
+                &AuditEntry {
+                    action,
+                    target: AuditTarget::Session(session.session_id),
+                    metadata: json!({ "participant_id": participant_id.to_storage() }),
+                    at,
+                },
+            )?;
+
+            outcome = Some(SessionChanged {
+                session_id: session.session_id,
+                participant_id,
+                at,
+            });
+            Ok(())
+        })?;
+
+        committed(outcome, "changing a session")
+    }
+
     /// Move a meeting from `DRAFT` to `OPEN`. Host only.
     pub fn open_meeting(
         &self,
@@ -632,6 +921,38 @@ fn committed<T>(outcome: Option<T>, operation: &'static str) -> DomainResult<T> 
         operation,
         detail: "the transaction committed without producing an outcome".to_owned(),
     })
+}
+
+/// The write half of a session action, shared by approving and revoking.
+///
+/// Both do the same thing to a different column, so the pipeline around them -
+/// load, authorize, check the lock, find the live session, audit - is written
+/// once and the difference is passed in.
+type SessionWrite<'a> =
+    &'a dyn Fn(&dyn DomainTx, &Authorized, SessionBinding, UtcTimestamp) -> DomainResult<()>;
+
+/// Translate a lost first-claim-wins race into the refusal it actually is.
+///
+/// The read a moment earlier said the identity was free, so a constraint
+/// violation here means another browser committed in between. The database is
+/// the arbiter (ADR-0002), and its answer is "someone else has it" - which is
+/// exactly [`DomainError::IdentityAlreadyClaimed`], not a generic conflict
+/// carrying a SQLite message.
+///
+/// Anything that is *not* a conflict is passed through untouched: a disk
+/// failure during a claim is still a disk failure.
+fn claim_conflict(
+    error: DomainError,
+    meeting_id: MeetingId,
+    participant_id: ParticipantId,
+) -> DomainError {
+    match error {
+        DomainError::Conflict { .. } => DomainError::IdentityAlreadyClaimed {
+            meeting_id,
+            participant_id,
+        },
+        other => other,
+    }
 }
 
 /// Audit context for a meeting's configuration.

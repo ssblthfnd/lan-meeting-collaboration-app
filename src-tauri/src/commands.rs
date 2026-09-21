@@ -14,12 +14,14 @@
 use tauri::State;
 
 use crate::dto::{
-    AuditEntryDto, MeetingConfigurationInput, MeetingCreatedDto, MeetingDetailDto,
-    MeetingSummaryDto, MeetingTransitionedDto, MeetingUpdatedDto, ParticipantAddedDto,
-    ParticipantDetailsInput, ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto,
+    AuditEntryDto, JoinTokenIssuedDto, LanInterfaceDto, MeetingConfigurationInput,
+    MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
+    MeetingUpdatedDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantRemovedDto,
+    ParticipantSummaryDto, ParticipantUpdatedDto, SessionChangedDto,
 };
-use crate::error::HostResult;
+use crate::error::{HostError, HostErrorKind, HostResult};
 use crate::host::HostState;
+use crate::lan::{LanLifecycle, LanServerStatus};
 
 /* -------------------------------------------------------------------------
  * Meetings
@@ -101,6 +103,77 @@ pub fn list_participants(
     meeting_id: String,
 ) -> HostResult<Vec<ParticipantSummaryDto>> {
     state.list_participants(&meeting_id)
+}
+
+/* -------------------------------------------------------------------------
+ * LAN access
+ *
+ * The server is started and stopped by the Host, never as a side effect of
+ * opening a meeting (ADR-0016). Which meetings are joinable is decided per
+ * request, by re-reading the meeting's status.
+ * ------------------------------------------------------------------------- */
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn start_lan_server(
+    state: State<'_, HostState>,
+    lan: State<'_, LanLifecycle>,
+    port: Option<u16>,
+) -> HostResult<LanServerStatus> {
+    // Touching `state` keeps the database alive for the server's lifetime and
+    // makes the sharing explicit at the call site.
+    let _ = state.shared_db();
+    lan.start(port).await.map_err(|error| {
+        eprintln!("[host] {error}");
+        HostError::new(
+            HostErrorKind::Persistence,
+            // The bind error already names the port and the two likely causes,
+            // so the Host is told what to do rather than that it failed.
+            error.to_string(),
+        )
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn stop_lan_server(lan: State<'_, LanLifecycle>) -> HostResult<LanServerStatus> {
+    Ok(lan.stop().await)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn lan_server_status(lan: State<'_, LanLifecycle>) -> HostResult<LanServerStatus> {
+    Ok(lan.status())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn list_lan_interfaces(state: State<'_, HostState>) -> HostResult<Vec<LanInterfaceDto>> {
+    Ok(state.lan_interfaces())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn issue_join_token(
+    state: State<'_, HostState>,
+    meeting_id: String,
+    address: String,
+    port: u16,
+) -> HostResult<JoinTokenIssuedDto> {
+    state.issue_join_token(&meeting_id, &address, port)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn approve_participant_claim(
+    state: State<'_, HostState>,
+    meeting_id: String,
+    participant_id: String,
+) -> HostResult<SessionChangedDto> {
+    state.approve_participant_claim(&meeting_id, &participant_id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn revoke_participant_session(
+    state: State<'_, HostState>,
+    meeting_id: String,
+    participant_id: String,
+) -> HostResult<SessionChangedDto> {
+    state.revoke_participant_session(&meeting_id, &participant_id)
 }
 
 /* -------------------------------------------------------------------------

@@ -174,6 +174,14 @@ pub struct Meeting {
     pub id: MeetingId,
     pub title: String,
     pub status: MeetingStatus,
+    /// Whether a join token is currently issued for this meeting.
+    ///
+    /// A boolean, deliberately not the hash. The domain needs to know only
+    /// whether issuing a new token would displace an existing one, so that the
+    /// audit record can say so; it has no use for the value, and a credential
+    /// hash that is never loaded is a credential hash that cannot be logged,
+    /// compared or leaked by accident.
+    pub has_join_token: bool,
 }
 
 impl Meeting {
@@ -204,6 +212,26 @@ impl Meeting {
         match self.status {
             MeetingStatus::Draft => Ok(()),
             detected => Err(DomainError::MeetingNotDraft {
+                meeting_id: self.id,
+                detected,
+            }),
+        }
+    }
+
+    /// Refuse unless participants may take part.
+    ///
+    /// The mirror of [`Meeting::ensure_draft`]. Preparation belongs to `DRAFT`
+    /// and participation belongs to `OPEN`: a meeting still being prepared has
+    /// no one to join it, and a locked one is finished (PRD sections 6 and 19).
+    ///
+    /// Every join and every claim re-reads this inside its own transaction, so
+    /// a meeting that locks mid-session stops accepting participants at once,
+    /// with no server restart and no cached status anywhere
+    /// (architecture rules section 15).
+    pub fn ensure_open(&self) -> DomainResult<()> {
+        match self.status {
+            MeetingStatus::Open => Ok(()),
+            detected => Err(DomainError::MeetingNotOpen {
                 meeting_id: self.id,
                 detected,
             }),
@@ -256,6 +284,7 @@ mod tests {
             id: MeetingId::new(),
             title: "Weekly Coordination".to_owned(),
             status,
+            has_join_token: false,
         }
     }
 

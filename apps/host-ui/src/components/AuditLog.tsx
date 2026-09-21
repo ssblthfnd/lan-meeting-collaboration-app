@@ -24,6 +24,12 @@ const DESCRIPTION: Record<AuditAction, string> = {
   'participant.added': 'Participant added',
   'participant.updated': 'Participant changed',
   'participant.removed': 'Participant removed',
+  'meeting.join_token_issued': 'Join link created',
+  'participant.claimed': 'Participant joined',
+  // "Checked", not "approved": acknowledgement grants nothing, and phrasing it
+  // as approval would imply the participant had been waiting (ADR-0016).
+  'participant.claim_approved': 'Participant checked by host',
+  'participant.session_revoked': 'Name released by host',
   'note.created': 'Note created',
   'note.updated': 'Note changed',
 };

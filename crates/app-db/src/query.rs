@@ -35,6 +35,7 @@
 use app_core::id::{AuditLogId, MeetingId, ParticipantId};
 use app_core::meeting::MeetingStatus;
 use app_core::participant::ParticipantDetails;
+use app_core::session::ClaimStatus;
 use app_core::time::{MeetingDate, MeetingTime, UtcTimestamp};
 use rusqlite::{params, OptionalExtension, Row};
 use serde_json::Value;
@@ -88,6 +89,13 @@ pub struct ParticipantSummary {
     /// Reused from `app-core` rather than redeclared, so the read model and the
     /// write model cannot drift apart.
     pub details: ParticipantDetails,
+    /// Derived from `participant_sessions`, never stored (ADR-0008).
+    ///
+    /// The Host needs this to see who has joined and to decide whether to
+    /// revoke an identity someone is holding by mistake. `PENDING` means a live
+    /// session the Host has not acknowledged - it is joined and working, not
+    /// waiting for permission (ADR-0016).
+    pub claim_status: ClaimStatus,
     pub created_at: UtcTimestamp,
 }
 
@@ -202,11 +210,24 @@ impl<'a> HostQueries<'a> {
     /// `idx_participants_meeting_name`.
     pub fn participants(&self, meeting_id: MeetingId) -> DbResult<Vec<ParticipantSummary>> {
         self.db.read(|conn| {
+            // The claim-status derivation is the one ADR-0008 defines, shared
+            // with the participant-facing query so the two audiences cannot be
+            // told different things about whether an identity is taken.
             let mut stmt = conn.prepare(
-                "SELECT id, name, department, position, meeting_role, created_at
-                   FROM participants
-                  WHERE meeting_id = ?1
-                  ORDER BY name ASC, id ASC",
+                "SELECT p.id, p.name, p.department, p.position, p.meeting_role, p.created_at,
+                        (SELECT count(*) FROM participant_sessions s
+                          WHERE s.participant_id = p.id),
+                        (SELECT count(*) FROM participant_sessions s
+                          WHERE s.participant_id = p.id
+                            AND s.revoked_at IS NULL
+                            AND s.approved_at IS NOT NULL),
+                        (SELECT count(*) FROM participant_sessions s
+                          WHERE s.participant_id = p.id
+                            AND s.revoked_at IS NULL
+                            AND s.approved_at IS NULL)
+                   FROM participants p
+                  WHERE p.meeting_id = ?1
+                  ORDER BY p.name ASC, p.id ASC",
             )?;
             let rows = stmt
                 .query_map(params![Sql(meeting_id)], |row| {
@@ -218,6 +239,11 @@ impl<'a> HostQueries<'a> {
                             position: row.get(3)?,
                             meeting_role: row.get(4)?,
                         },
+                        claim_status: crate::participant_query::derive_claim_status(
+                            row.get(6)?,
+                            row.get(7)?,
+                            row.get(8)?,
+                        ),
                         created_at: row.get::<_, Sql<UtcTimestamp>>(5)?.into_inner(),
                     })
                 })?

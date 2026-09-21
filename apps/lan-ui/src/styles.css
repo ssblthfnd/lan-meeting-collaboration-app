@@ -1,16 +1,43 @@
+/*
+ * LAN participant styles.
+ *
+ * Plain CSS, no framework, no external font. This bundle is embedded in the
+ * Rust binary and served from a laptop that may have no internet at all, and
+ * the content security policy the server sends forbids a remote origin anyway.
+ *
+ * Built for a phone first: most participants arrive by scanning a QR code, so
+ * the identity list has to be comfortable to tap one-handed.
+ */
+
 :root {
   color-scheme: light dark;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   --bg: #ffffff;
+  --panel: #f8fafc;
+  --border: #e2e8f0;
   --fg: #172554;
   --muted: #475569;
+  --accent: #1d4ed8;
+  --accent-fg: #ffffff;
+  --warn-bg: #fef3c7;
+  --warn-fg: #78350f;
+  --error-bg: #fee2e2;
+  --error-fg: #7f1d1d;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0b1220;
+    --panel: #131c2e;
+    --border: #1f2a3e;
     --fg: #e2e8f0;
     --muted: #94a3b8;
+    --accent: #60a5fa;
+    --accent-fg: #0b1220;
+    --warn-bg: #3b2f14;
+    --warn-fg: #fde68a;
+    --error-bg: #3f1717;
+    --error-fg: #fecaca;
   }
 }
 
@@ -27,7 +54,7 @@ body {
 .shell {
   max-width: 34rem;
   margin: 0 auto;
-  padding: 2rem 1rem;
+  padding: 1.5rem 1rem 3rem;
 }
 
 h1 {
@@ -35,7 +62,122 @@ h1 {
   margin: 0 0 0.25rem;
 }
 
-.subtitle {
+h2 {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+}
+
+p {
+  margin: 0 0 0.5rem;
+}
+
+.meta,
+.topic {
   color: var(--muted);
-  margin: 0 0 1.5rem;
+  font-size: 0.875rem;
+}
+
+.empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.meeting {
+  margin-bottom: 1.25rem;
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--panel);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+/* ---- identity list ---- */
+
+.identities {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+}
+
+.identities > li {
+  margin-bottom: 0.5rem;
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  /* Generous target: this is tapped on a phone, often standing up. */
+  padding: 0.75rem;
+  min-height: 3rem;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.identity:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.identity:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.identity:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.identity.taken {
+  background: var(--panel);
+}
+
+.identity-name {
+  font-weight: 600;
+}
+
+.joined-name {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 0.25rem;
+}
+
+/* ---- notices ---- */
+
+.notice {
+  border-radius: 0.375rem;
+  padding: 0.625rem 0.75rem;
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+}
+
+.notice p {
+  margin: 0;
+}
+
+.notice p + p {
+  margin-top: 0.25rem;
+}
+
+.notice-lifecycle,
+.notice-conflict,
+.notice-validation {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+
+.notice-authorization,
+.notice-not_found,
+.notice-unexpected {
+  background: var(--error-bg);
+  color: var(--error-fg);
 }

@@ -14,14 +14,16 @@
 use app_core::audit::AuditEntry;
 use app_core::authz::Authorized;
 use app_core::error::{DomainError, DomainResult};
-use app_core::id::{MeetingId, NoteId, ParticipantId};
+use app_core::id::{MeetingId, NoteId, ParticipantId, SessionId};
 use app_core::meeting::{Meeting, MeetingConfiguration, MeetingStatus};
 use app_core::participant::ParticipantDetails;
 use app_core::port::{
-    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NoteRow,
+    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NewSession, NoteRow,
     ParticipantRow,
 };
+use app_core::session::SessionBinding;
 use app_core::time::UtcTimestamp;
+use app_core::token::TokenHash;
 use rusqlite::{params, OptionalExtension, Transaction};
 
 use crate::error::DbError;
@@ -64,20 +66,25 @@ impl DomainTx for DbTx<'_, '_> {
         let row = self
             .tx
             .query_row(
-                "SELECT id, title, status FROM meetings WHERE id = ?1",
+                // `join_token_hash IS NOT NULL` rather than the hash itself: the
+                // domain needs to know whether issuing would displace a token,
+                // and nothing more. A credential never enters the domain.
+                "SELECT id, title, status, join_token_hash IS NOT NULL
+                   FROM meetings WHERE id = ?1",
                 params![Sql(meeting_id)],
                 |row| {
                     Ok((
                         row.get::<_, Sql<MeetingId>>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, bool>(3)?,
                     ))
                 },
             )
             .optional()
             .map_err(DbError::from)?;
 
-        row.map(|(id, title, status)| {
+        row.map(|(id, title, status, has_join_token)| {
             Ok(Meeting {
                 id: id.into_inner(),
                 title,
@@ -85,6 +92,7 @@ impl DomainTx for DbTx<'_, '_> {
                 // disagrees with this binary about the lifecycle. Surface it
                 // rather than guessing.
                 status: status.parse::<MeetingStatus>()?,
+                has_join_token,
             })
         })
         .transpose()
@@ -111,6 +119,42 @@ impl DomainTx for DbTx<'_, '_> {
                             position: row.get(3)?,
                             meeting_role: row.get(4)?,
                         },
+                    })
+                },
+            )
+            .optional()
+            .map_err(DbError::from)?;
+        Ok(row)
+    }
+
+    fn find_live_session(
+        &self,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+    ) -> DomainResult<Option<SessionBinding>> {
+        // `revoked_at IS NULL` is the definition of live, and it is the same
+        // predicate the partial unique index uses - so what this read sees and
+        // what the index enforces cannot disagree (ADR-0002).
+        //
+        // The token hash is deliberately not selected. Nothing in the domain
+        // needs it, and a credential hash that is never loaded cannot be leaked
+        // by a later change to a struct that carries it.
+        let row = self
+            .tx
+            .query_row(
+                "SELECT id, approved_at
+                   FROM participant_sessions
+                  WHERE meeting_id = ?1 AND participant_id = ?2
+                    AND revoked_at IS NULL",
+                params![Sql(meeting_id), Sql(participant_id)],
+                |row| {
+                    Ok(SessionBinding {
+                        session_id: row.get::<_, Sql<SessionId>>(0)?.into_inner(),
+                        meeting_id,
+                        participant_id,
+                        approved_at: row
+                            .get::<_, Option<Sql<UtcTimestamp>>>(1)?
+                            .map(Sql::into_inner),
                     })
                 },
             )
@@ -285,6 +329,88 @@ impl DomainTx for DbTx<'_, '_> {
             .execute(
                 "DELETE FROM participants WHERE id = ?1 AND meeting_id = ?2",
                 params![Sql(participant_id), Sql(proof.meeting_id())],
+            )
+            .map_err(DbError::from)?;
+        Ok(())
+    }
+
+    fn set_join_token_hash(
+        &self,
+        proof: &Authorized,
+        token_hash: &TokenHash,
+        at: UtcTimestamp,
+    ) -> DomainResult<()> {
+        // Overwriting is rotation: the previous hash matches nothing after this,
+        // so the previous URL resolves to no meeting. The column is `UNIQUE`, so
+        // the astronomically unlikely collision with another meeting's token is
+        // a constraint violation rather than two meetings sharing a URL.
+        self.tx
+            .execute(
+                "UPDATE meetings SET join_token_hash = ?1, updated_at = ?2 WHERE id = ?3",
+                params![token_hash.as_str(), Sql(at), Sql(proof.meeting_id())],
+            )
+            .map_err(DbError::from)?;
+        Ok(())
+    }
+
+    fn insert_session(&self, proof: &Authorized, session: &NewSession) -> DomainResult<()> {
+        // `approved_at` and `revoked_at` are left null: a new session is live
+        // and unacknowledged, and it can act (ADR-0016).
+        //
+        // The partial unique index decides a race here. A second live session
+        // for the same identity fails as a constraint violation, which the
+        // domain maps back to `IdentityAlreadyClaimed`.
+        self.tx
+            .execute(
+                "INSERT INTO participant_sessions
+                   (id, meeting_id, participant_id, session_token_hash, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    Sql(session.id),
+                    Sql(proof.meeting_id()),
+                    Sql(session.participant_id),
+                    session.token_hash.as_str(),
+                    Sql(session.at),
+                ],
+            )
+            .map_err(DbError::from)?;
+        Ok(())
+    }
+
+    fn approve_session(
+        &self,
+        proof: &Authorized,
+        session_id: SessionId,
+        at: UtcTimestamp,
+    ) -> DomainResult<()> {
+        // Only a live session can be acknowledged, and only within the meeting
+        // the proof is scoped to.
+        self.tx
+            .execute(
+                "UPDATE participant_sessions
+                    SET approved_at = ?1
+                  WHERE id = ?2 AND meeting_id = ?3 AND revoked_at IS NULL",
+                params![Sql(at), Sql(session_id), Sql(proof.meeting_id())],
+            )
+            .map_err(DbError::from)?;
+        Ok(())
+    }
+
+    fn revoke_session(
+        &self,
+        proof: &Authorized,
+        session_id: SessionId,
+        at: UtcTimestamp,
+    ) -> DomainResult<()> {
+        // The row stays; only `revoked_at` is set. History is retained, and the
+        // partial unique index stops constraining this row, so the identity
+        // becomes claimable again (ADR-0002 rule 5).
+        self.tx
+            .execute(
+                "UPDATE participant_sessions
+                    SET revoked_at = ?1
+                  WHERE id = ?2 AND meeting_id = ?3 AND revoked_at IS NULL",
+                params![Sql(at), Sql(session_id), Sql(proof.meeting_id())],
             )
             .map_err(DbError::from)?;
         Ok(())

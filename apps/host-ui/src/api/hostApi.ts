@@ -19,6 +19,9 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AuditEntry,
   HostError,
+  JoinTokenIssued,
+  LanInterface,
+  LanServerStatus,
   MeetingConfigurationInput,
   MeetingCreated,
   MeetingDetail,
@@ -32,6 +35,7 @@ import type {
   ParticipantRemoved,
   ParticipantSummary,
   ParticipantUpdated,
+  SessionChanged,
 } from '@lan-meeting/contracts';
 
 import { toHostError } from './errors';
@@ -130,6 +134,84 @@ export function removeParticipant(
   participantId: ParticipantId,
 ): Promise<ParticipantRemoved> {
   return call<ParticipantRemoved>('remove_participant', {
+    meeting_id: meetingId,
+    participant_id: participantId,
+  });
+}
+
+/* -------------------------------------------------------------------------
+ * LAN access
+ *
+ * The server is started and stopped by the Host. Opening a meeting does not
+ * start it: binding a LAN-reachable socket is a decision, not a side effect
+ * (ADR-0016).
+ * ------------------------------------------------------------------------- */
+
+/** Whether the LAN server is running, and on which port. */
+export function lanServerStatus(): Promise<LanServerStatus> {
+  return call<LanServerStatus>('lan_server_status');
+}
+
+/** Start serving participants. `null` port means the default. */
+export function startLanServer(port: number | null): Promise<LanServerStatus> {
+  return call<LanServerStatus>('start_lan_server', { port });
+}
+
+/** Stop serving. Waits until the port is actually free. */
+export function stopLanServer(): Promise<LanServerStatus> {
+  return call<LanServerStatus>('stop_lan_server');
+}
+
+/** Every local address the Host could advertise, most useful first. */
+export function listLanInterfaces(): Promise<readonly LanInterface[]> {
+  return call<LanInterface[]>('list_lan_interfaces');
+}
+
+/**
+ * Mint a join token and build its URL and QR code.
+ *
+ * The plaintext token exists only in the response: the backend stored a hash.
+ * Issuing again invalidates the previous link (PRD section 22.2).
+ */
+export function issueJoinToken(
+  meetingId: MeetingId,
+  address: string,
+  port: number,
+): Promise<JoinTokenIssued> {
+  return call<JoinTokenIssued>('issue_join_token', {
+    meeting_id: meetingId,
+    address,
+    port,
+  });
+}
+
+/**
+ * Acknowledge a participant's claim.
+ *
+ * Records that the Host saw it. It grants nothing - the participant could
+ * already take part, and still can (ADR-0016).
+ */
+export function approveParticipantClaim(
+  meetingId: MeetingId,
+  participantId: ParticipantId,
+): Promise<SessionChanged> {
+  return call<SessionChanged>('approve_participant_claim', {
+    meeting_id: meetingId,
+    participant_id: participantId,
+  });
+}
+
+/**
+ * End a participant's session, freeing the identity to be claimed again.
+ *
+ * What makes first-claim-wins workable in a room: a name taken by the wrong
+ * person, or stranded on a closed laptop, can be released (ADR-0002 rule 5).
+ */
+export function revokeParticipantSession(
+  meetingId: MeetingId,
+  participantId: ParticipantId,
+): Promise<SessionChanged> {
+  return call<SessionChanged>('revoke_participant_session', {
     meeting_id: meetingId,
     participant_id: participantId,
   });
