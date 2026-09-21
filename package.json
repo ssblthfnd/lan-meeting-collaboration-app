@@ -20,6 +20,7 @@
     "build:lan": "npm run build --workspace @lan-meeting/lan-ui",
     "build:remote": "npm run build --workspace @lan-meeting/remote-form",
     "build:web": "npm run build:host && npm run build:lan && npm run build:remote",
+    "build": "npm run build:web",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "check:remote-offline": "node scripts/check-remote-form-offline.mjs",
     "tauri": "tauri",

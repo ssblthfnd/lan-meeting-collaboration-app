@@ -6,7 +6,7 @@
 //! Responsibilities:
 //! - connection/pool management and PRAGMAs (WAL, foreign keys, busy timeout)
 //! - embedded schema migrations
-//! - repositories (typed read/write access)
+//! - repositories: the domain-port write adapter, and typed read queries
 //! - transaction helpers; the meeting lock check runs *inside* the mutating
 //!   transaction, never as a separate pre-flight query
 //!
@@ -36,20 +36,28 @@
 //! requires an `Authorized` that only `app-core` can mint. This crate cannot
 //! grant itself permission to write.
 //!
-//! Status: Phase 1, step 3. Schema, migrations, pool, transaction helpers and
-//! the domain-port adapter exist, the last covering meeting configuration and
-//! the participant roster. Query-side repositories arrive with the steps that
-//! need them.
+//! # Two sides, one crate
+//!
+//! [`repository`] is the write adapter behind the domain's mutation boundary;
+//! [`query`] answers what the Host UI displays. Reads deliberately do not travel
+//! through the domain (ADR-0014), but both halves are the same kind of thing:
+//! mechanics with no rules in them.
+//!
+//! Status: Phase 1, step 4. Schema, migrations, pool, transaction helpers, the
+//! domain-port adapter and the Host read queries exist. A participant-facing
+//! query type arrives with the LAN transport, and is deliberately not these.
 
 #![forbid(unsafe_code)]
 
 pub mod error;
 pub mod migrations;
 pub mod pool;
+pub mod query;
 pub mod repository;
 pub mod sql;
 
 pub use error::{DbError, DbResult};
 pub use pool::Db;
+pub use query::{AuditEntryView, HostQueries, MeetingDetail, MeetingSummary, ParticipantSummary};
 pub use repository::DbTx;
 pub use sql::Sql;

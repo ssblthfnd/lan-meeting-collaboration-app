@@ -11,6 +11,9 @@ authors.workspace = true
 [dependencies]
 app-core = { workspace = true }
 thiserror = { workspace = true }
+# `audit_logs.metadata` is a JSON column; the read side returns it parsed rather
+# than as text the caller must re-parse.
+serde_json = { workspace = true }
 rusqlite = { workspace = true }
 r2d2 = { workspace = true }
 r2d2_sqlite = { workspace = true }

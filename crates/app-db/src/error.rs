@@ -40,6 +40,21 @@ pub enum DbError {
     #[error("constraint violated: {detail}")]
     Constraint { detail: String },
 
+    /// Stored data is not what the schema guarantees about it.
+    ///
+    /// Reachable only when something wrote past a `CHECK` constraint - a direct
+    /// edit of the file, or a future code path that bypassed this crate. Read
+    /// back as a failure rather than quietly coerced, because silently showing
+    /// such a row as empty would hide the fact that the database is wrong.
+    #[error(
+        "stored {what} is not what the schema guarantees: expected {expected}, detected {detected}"
+    )]
+    Malformed {
+        what: &'static str,
+        expected: String,
+        detected: String,
+    },
+
     /// The writer connection was poisoned by a panic in another thread.
     #[error("the database writer is unusable because a previous write panicked")]
     WriterPoisoned,

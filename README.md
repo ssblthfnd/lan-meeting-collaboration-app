@@ -10,8 +10,10 @@ a submission file back for the Host to import.
 Everything is stored in a local SQLite database on the Host device.
 **No cloud, no external API, no public hosting, no AI API.**
 
-> **Status: project skeleton.** No features are implemented yet. See
-> [Roadmap](#roadmap).
+> **Status: Host meeting management works.** A Host can create a meeting,
+> configure it, build a roster of up to 99 participants, open the meeting and
+> read its audit trail. The LAN server, notes and export are not implemented yet.
+> See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -110,17 +112,18 @@ npm run tauri build        # package the desktop app
 
 Phase 1 is built in order, each step independently demonstrable:
 
-1. Environment and skeleton *(current)*
+1. Environment and skeleton
 2. Data spine: migrations, repositories, audit triggers
 3. Domain core: actors, authorization, lock-in-transaction, versioning
-4. Host UI: meeting lifecycle, participants, audit view
-5. LAN server, join flow, identity claim, QR
-6. Realtime: audience-scoped WebSocket
-7. Host note editing and version history
-8. Remote form generation
-9. Remote submission import pipeline
-10. Meeting lock
-11. Export: Markdown and TXT / AI Context
+4. Meeting and participant management in the domain
+5. Host UI: meeting lifecycle, participants, audit view *(current)*
+6. LAN server, join flow, identity claim, QR
+7. Realtime: audience-scoped WebSocket
+8. Host note editing and version history
+9. Remote form generation
+10. Remote submission import pipeline
+11. Meeting lock
+12. Export: Markdown and TXT / AI Context
 
 PDF export is Phase 2 by decision - see
 [ADR-0004](docs/adr/0004-defer-pdf-export.md).

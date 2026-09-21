@@ -8,6 +8,18 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# A library plus a thin binary: `HostState` and the error mapping are then
+# reachable from integration tests without a running Tauri application. The
+# `_lib` suffix keeps the library and binary target names distinct, which avoids
+# a name collision at link time on Windows.
+[lib]
+name = "lan_meeting_app_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lan-meeting-app"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -20,6 +32,9 @@ app-export = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [features]
 # Used by `tauri build --debug` to keep devtools available.

@@ -67,6 +67,7 @@ dependencies = [
  "r2d2_sqlite",
  "refinery",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
 ]
@@ -1815,6 +1816,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tempfile",
 ]
 
 [[package]]

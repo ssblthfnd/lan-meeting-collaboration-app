@@ -19,6 +19,8 @@ history.
 | [0011](0011-identifier-and-storage-formats.md) | Identifier type and canonical storage formats | Accepted |
 | [0012](0012-domain-mutation-boundary.md) | The domain mutation boundary | Accepted |
 | [0013](0013-draft-only-configuration-and-roster.md) | A meeting's configuration and roster are settled in DRAFT | Accepted |
+| [0014](0014-host-read-path.md) | Reads do not go through the mutation boundary | Accepted |
+| [0015](0015-host-error-contract.md) | The Host error contract | Accepted |
 
 Template:
 
