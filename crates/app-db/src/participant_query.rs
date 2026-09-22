@@ -21,7 +21,7 @@
 //! | Holding | May see |
 //! | --- | --- |
 //! | a join token | the meeting's public facts; **names and claim status only** |
-//! | a session token | the above, plus their own full details |
+//! | a session token | the above, plus their own full details and own note |
 //!
 //! A name is unavoidable: a participant picks their own identity from the list
 //! (PRD section 5.2). Department, position and role are not needed to pick a
@@ -34,7 +34,7 @@ use app_core::id::{MeetingId, ParticipantId};
 use app_core::meeting::MeetingStatus;
 use app_core::participant::ParticipantDetails;
 use app_core::session::ClaimStatus;
-use app_core::time::{MeetingDate, MeetingTime};
+use app_core::time::{MeetingDate, MeetingTime, UtcTimestamp};
 use rusqlite::{params, OptionalExtension};
 
 use crate::error::{DbError, DbResult};
@@ -77,6 +77,30 @@ pub struct ClaimableIdentity {
 pub struct OwnIdentity {
     pub id: ParticipantId,
     pub details: ParticipantDetails,
+}
+
+/// A participant's own note.
+///
+/// Deliberately **not** `HostQueries::note`. Read models are named for their
+/// audience (ADR-0014), and the Host's shape carries a note id, a creation
+/// timestamp and an author id that a participant has no use for. Reusing it
+/// here would be reusing a convenient struct across two audiences, which is
+/// how something meant for one ends up in the other's hands.
+///
+/// `last_author_type` is the one piece of provenance a participant genuinely
+/// needs: it is how they can tell that the Host changed their note underneath
+/// them. The author's *id* is withheld, because for one's own note the only
+/// possible authors are themselves, the Host, or an import - the type alone is
+/// unambiguous, and an id would add surface without adding an answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnNote {
+    /// GFM-subset Markdown as text (ADR-0007).
+    pub content: String,
+    /// The newest history version. Dense from 1 (ADR-0019).
+    pub version: i64,
+    pub updated_at: UtcTimestamp,
+    /// `HOST`, `PARTICIPANT` or `REMOTE_IMPORT`, as stored.
+    pub last_author_type: String,
 }
 
 /// Read-only queries answering what a LAN participant may see.
@@ -206,6 +230,48 @@ impl<'a> ParticipantQueries<'a> {
                                 position: row.get(3)?,
                                 meeting_role: row.get(4)?,
                             },
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    /// The participant's own note, if they have written one.
+    ///
+    /// Scoped by **both** ids, and both came from a resolved session rather
+    /// than from a request. A participant asking for somebody else's note
+    /// cannot express the question: no route passes a participant id here, and
+    /// this signature has nowhere to put one that is not the caller's own
+    /// (PRD section 5.2 - a participant may not see another participant's
+    /// note).
+    ///
+    /// The newest history row supplies the version and the authorship. It
+    /// always exists for a note that exists: `Domain::write_note` appends one
+    /// in the same transaction that creates the note, so a note with no
+    /// history would mean something had written past the mutation boundary.
+    pub fn own_note(
+        &self,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+    ) -> DbResult<Option<OwnNote>> {
+        self.db.read(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT n.content, n.updated_at, v.version, v.created_by_type
+                       FROM notes n
+                       JOIN note_versions v ON v.note_id = n.id
+                      WHERE n.meeting_id = ?1 AND n.participant_id = ?2
+                      ORDER BY v.version DESC
+                      LIMIT 1",
+                    params![Sql(meeting_id), Sql(participant_id)],
+                    |row| {
+                        Ok(OwnNote {
+                            content: row.get(0)?,
+                            updated_at: row.get::<_, Sql<UtcTimestamp>>(1)?.into_inner(),
+                            version: row.get(2)?,
+                            last_author_type: row.get(3)?,
                         })
                     },
                 )

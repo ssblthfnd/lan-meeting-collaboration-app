@@ -17,6 +17,7 @@ use app_core::meeting::MeetingConfiguration;
 use app_core::participant::ParticipantDetails;
 use app_core::service::{Domain, WriteNote};
 use app_core::time::{MeetingDate, MeetingTime, MeetingTimeZone};
+use app_db::participant_query::ParticipantQueries;
 use app_db::query::HostQueries;
 use app_db::Db;
 use tempfile::TempDir;
@@ -445,6 +446,293 @@ fn a_meeting_with_no_roster_has_an_empty_overview() {
         .notes_overview(meeting_id)
         .unwrap()
         .is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// The participant's own read model
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_participant_with_no_note_reads_as_absent() {
+    let world = World::new();
+    let meeting_id = world.meeting("Weekly");
+    let participant_id = world.participant(meeting_id, "Budi Santoso");
+
+    assert_eq!(
+        ParticipantQueries::new(&world.db)
+            .own_note(meeting_id, participant_id)
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_participants_own_note_reads_back_with_its_version_and_author() {
+    let world = World::new();
+    let meeting_id = world.meeting("Weekly");
+    let participant_id = world.participant(meeting_id, "Budi Santoso");
+    world.write_as_participant(meeting_id, participant_id, "mine");
+
+    let note = ParticipantQueries::new(&world.db)
+        .own_note(meeting_id, participant_id)
+        .unwrap()
+        .expect("a note");
+    assert_eq!(note.content, "mine");
+    assert_eq!(note.version, 1);
+    assert_eq!(note.last_author_type, "PARTICIPANT");
+}
+
+#[test]
+fn a_participant_can_see_that_the_host_changed_their_note() {
+    // The one piece of provenance the participant shape carries, and the
+    // reason it carries it (ADR-0020).
+    let world = World::new();
+    let meeting_id = world.meeting("Weekly");
+    let participant_id = world.participant(meeting_id, "Budi Santoso");
+
+    world.write_as_participant(meeting_id, participant_id, "mine");
+    world.write(meeting_id, participant_id, "the host's correction");
+
+    let note = ParticipantQueries::new(&world.db)
+        .own_note(meeting_id, participant_id)
+        .unwrap()
+        .expect("a note");
+    assert_eq!(note.content, "the host's correction");
+    assert_eq!(note.version, 2);
+    assert_eq!(note.last_author_type, "HOST");
+}
+
+#[test]
+fn the_participant_read_model_cannot_reach_another_participants_note() {
+    // Scoped by both ids, and there is no route that passes a participant id
+    // here (PRD section 5.2).
+    let world = World::new();
+    let meeting_id = world.meeting("Weekly");
+    let alice = world.participant(meeting_id, "Alice Anwar");
+    let bob = world.participant(meeting_id, "Bob Basuki");
+
+    world.write_as_participant(meeting_id, alice, "alice's");
+    world.write_as_participant(meeting_id, bob, "bob's");
+
+    let queries = ParticipantQueries::new(&world.db);
+    assert_eq!(
+        queries
+            .own_note(meeting_id, alice)
+            .unwrap()
+            .unwrap()
+            .content,
+        "alice's"
+    );
+    assert_eq!(
+        queries.own_note(meeting_id, bob).unwrap().unwrap().content,
+        "bob's"
+    );
+}
+
+#[test]
+fn the_participant_read_model_is_scoped_to_its_own_meeting() {
+    let world = World::new();
+    let here = world.meeting("Weekly");
+    let elsewhere = world.meeting("Budget Review");
+    let mine = world.participant(here, "Budi Santoso");
+    let theirs = world.participant(elsewhere, "Siti Rahayu");
+    world.write_as_participant(elsewhere, theirs, "theirs");
+
+    let queries = ParticipantQueries::new(&world.db);
+    assert_eq!(queries.own_note(here, theirs).unwrap(), None);
+    assert_eq!(queries.own_note(elsewhere, mine).unwrap(), None);
+}
+
+#[test]
+fn the_participant_read_model_survives_a_lock() {
+    let world = World::new();
+    let meeting_id = world.meeting("Weekly");
+    let participant_id = world.participant(meeting_id, "Budi Santoso");
+    world.write_as_participant(meeting_id, participant_id, "kept");
+
+    world
+        .domain
+        .open_meeting(&Actor::Host, meeting_id)
+        .expect("open");
+    world
+        .domain
+        .lock_meeting(&Actor::Host, meeting_id)
+        .expect("lock");
+
+    assert!(ParticipantQueries::new(&world.db)
+        .own_note(meeting_id, participant_id)
+        .unwrap()
+        .is_some());
+}
+
+// ---------------------------------------------------------------------------
+// A participant writing their own note, through the domain
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_participant_write_is_attributed_to_the_participant() {
+    let world = World::new();
+    let meeting_id = world.meeting("Weekly");
+    let participant_id = world.participant(meeting_id, "Budi Santoso");
+    world.write_as_participant(meeting_id, participant_id, "mine");
+
+    let versions = world
+        .queries()
+        .note_versions(meeting_id, participant_id)
+        .unwrap();
+    assert_eq!(versions[0].created_by_type, "PARTICIPANT");
+    assert_eq!(versions[0].created_by, Some(participant_id));
+}
+
+#[test]
+fn a_participant_cannot_write_another_participants_note() {
+    let world = World::new();
+    let meeting_id = world.meeting("Weekly");
+    let alice = world.participant(meeting_id, "Alice Anwar");
+    let bob = world.participant(meeting_id, "Bob Basuki");
+
+    let refused = world.domain.write_note(
+        &Actor::Participant {
+            meeting_id,
+            participant_id: alice,
+            session_id: app_core::id::SessionId::new(),
+        },
+        WriteNote {
+            meeting_id,
+            participant_id: bob,
+            content: "not mine to write".to_owned(),
+        },
+    );
+
+    assert!(refused.is_err());
+    assert_eq!(
+        ParticipantQueries::new(&world.db)
+            .own_note(meeting_id, bob)
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_participant_cannot_act_in_another_meeting() {
+    let world = World::new();
+    let here = world.meeting("Weekly");
+    let elsewhere = world.meeting("Budget Review");
+    let mine = world.participant(here, "Budi Santoso");
+    let theirs = world.participant(elsewhere, "Siti Rahayu");
+
+    let refused = world.domain.write_note(
+        &Actor::Participant {
+            meeting_id: here,
+            participant_id: mine,
+            session_id: app_core::id::SessionId::new(),
+        },
+        WriteNote {
+            meeting_id: elsewhere,
+            participant_id: theirs,
+            content: "reaching across".to_owned(),
+        },
+    );
+
+    assert!(refused.is_err());
+}
+
+#[test]
+fn a_locked_meeting_refuses_a_participant_write() {
+    let world = World::new();
+    let meeting_id = world.meeting("Weekly");
+    let participant_id = world.participant(meeting_id, "Budi Santoso");
+    world.write_as_participant(meeting_id, participant_id, "before");
+
+    world
+        .domain
+        .open_meeting(&Actor::Host, meeting_id)
+        .expect("open");
+    world
+        .domain
+        .lock_meeting(&Actor::Host, meeting_id)
+        .expect("lock");
+
+    let refused = world.domain.write_note(
+        &Actor::Participant {
+            meeting_id,
+            participant_id,
+            session_id: app_core::id::SessionId::new(),
+        },
+        WriteNote {
+            meeting_id,
+            participant_id,
+            content: "after".to_owned(),
+        },
+    );
+    assert!(refused.is_err());
+
+    assert_eq!(
+        ParticipantQueries::new(&world.db)
+            .own_note(meeting_id, participant_id)
+            .unwrap()
+            .unwrap()
+            .content,
+        "before"
+    );
+}
+
+#[test]
+fn a_refused_participant_write_creates_neither_a_version_nor_an_audit_entry() {
+    let world = World::new();
+    let meeting_id = world.meeting("Weekly");
+    let participant_id = world.participant(meeting_id, "Budi Santoso");
+
+    let before = world.queries().audit_entries(meeting_id).unwrap().len();
+
+    let refused = world.domain.write_note(
+        &Actor::Participant {
+            meeting_id,
+            participant_id,
+            session_id: app_core::id::SessionId::new(),
+        },
+        WriteNote {
+            meeting_id,
+            participant_id,
+            content: "<script>alert(1)</script>".to_owned(),
+        },
+    );
+    assert!(refused.is_err());
+
+    assert!(world
+        .queries()
+        .note_versions(meeting_id, participant_id)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        world.queries().audit_entries(meeting_id).unwrap().len(),
+        before
+    );
+}
+
+#[test]
+fn a_participant_write_is_audited_as_the_participant_without_the_body() {
+    let world = World::new();
+    let meeting_id = world.meeting("Weekly");
+    let participant_id = world.participant(meeting_id, "Budi Santoso");
+
+    let secret = "Budget overrun of 40 percent";
+    world.write_as_participant(meeting_id, participant_id, secret);
+
+    let entries = world.queries().audit_entries(meeting_id).unwrap();
+    let note_entry = entries
+        .iter()
+        .find(|entry| entry.action.starts_with("note."))
+        .expect("a note audit entry");
+
+    assert_eq!(note_entry.action, "note.created");
+    assert_eq!(note_entry.actor_type, "PARTICIPANT");
+    assert_eq!(note_entry.actor_id, Some(participant_id));
+    assert_eq!(note_entry.target_type, "note");
+
+    let metadata = note_entry.metadata.as_ref().expect("metadata").to_string();
+    assert!(metadata.contains("\"version\":1"), "{metadata}");
+    assert!(!metadata.contains("Budget overrun"), "{metadata}");
 }
 
 // ---------------------------------------------------------------------------

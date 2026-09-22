@@ -76,7 +76,9 @@ pub mod session_store;
 pub mod sql;
 
 pub use error::{DbError, DbResult};
-pub use participant_query::{ClaimableIdentity, JoinableMeeting, OwnIdentity, ParticipantQueries};
+pub use participant_query::{
+    ClaimableIdentity, JoinableMeeting, OwnIdentity, OwnNote, ParticipantQueries,
+};
 pub use pool::Db;
 pub use presence::{ParticipantPresence, PresenceStore};
 pub use query::{

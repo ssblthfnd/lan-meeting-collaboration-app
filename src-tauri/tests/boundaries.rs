@@ -559,28 +559,198 @@ fn nothing_restores_a_note_version() {
 }
 
 #[test]
-fn the_lan_transport_offers_no_note_route() {
-    // Participant note editing is step 8B. The domain already permits a
-    // participant to write their own note, so the only thing standing between
-    // here and there is a route - which makes its absence worth asserting
-    // rather than assuming.
+fn the_participant_note_route_addresses_nobody() {
+    // Step 8B's whole security argument in one assertion. `/api/note` takes no
+    // path segment, so there is no identifier to substitute; the meeting and
+    // the participant come from the resolved session. A check can be forgotten
+    // by a future handler, and a parameter that does not exist cannot be
+    // (ADR-0020).
     let root = repository_root();
+    let router = code_only(&read(&root.join("crates/app-server/src/router.rs")));
 
-    let routes = code_only(&read(&root.join("crates/app-server/src/router.rs")));
     assert!(
-        !routes.contains("note"),
-        "app-server declares a note route: participant note editing is step 8B"
+        router.contains("\"/api/note\""),
+        "the participant note route is missing"
     );
+    for forbidden in [
+        "/api/note/{",
+        "/api/meetings/{",
+        "/api/participants/{",
+        "/api/note/{participant_id}",
+    ] {
+        assert!(
+            !router.contains(forbidden),
+            "the note route must carry no identifier, found `{forbidden}`"
+        );
+    }
+
+    // And the request body has one field. A `participant_id` here would be a
+    // value the server could read by mistake; there is none to read.
+    let dto = shipped_code(
+        &root.join("crates/app-server/src/dto.rs"),
+        &read(&root.join("crates/app-server/src/dto.rs")),
+    );
+    let request = dto
+        .split("pub struct WriteNoteRequest")
+        .nth(1)
+        .expect("a WriteNoteRequest")
+        .split('}')
+        .next()
+        .expect("the struct ends");
+    for forbidden in [
+        "participant_id",
+        "meeting_id",
+        "note_id",
+        "expected_version",
+    ] {
+        assert!(
+            !request.contains(forbidden),
+            "WriteNoteRequest must not carry `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn the_participant_note_response_carries_no_identifiers() {
+    // The participant shape is four fields, and the omissions are the design:
+    // no note id, no author id, no meeting or participant id (ADR-0020).
+    let root = repository_root();
+    let dto = read(&root.join("crates/app-server/src/dto.rs"));
+    let view = dto
+        .split("pub struct NoteView")
+        .nth(1)
+        .expect("a NoteView")
+        .split('}')
+        .next()
+        .expect("the struct ends");
+
+    for forbidden in [
+        "note_id",
+        "last_author_id",
+        "meeting_id",
+        "participant_id",
+        "session_id",
+    ] {
+        assert!(
+            !view.contains(forbidden),
+            "NoteView must not expose `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn the_participant_read_path_stays_its_own() {
+    // ADR-0014: read models are named for their audience. The participant note
+    // read must not be the Host's query wearing a different name, because the
+    // Host's shape carries fields a participant may not need to see.
+    let root = repository_root();
+    let server = sources(&root.join("crates/app-server/src"), &["rs"]);
+
+    for file in server {
+        let contents = shipped_code(&file, &read(&file));
+        assert!(
+            !contents.contains("HostQueries"),
+            "{} reaches for the Host's read model",
+            file.display()
+        );
+    }
+}
+
+#[test]
+fn the_note_body_limit_is_scoped_to_the_write_method() {
+    // The kilobyte is what stops an untrusted client making the Host allocate
+    // for an identifier (architecture rules section 10). A note needs more, and
+    // it gets it on one *method* of one route - not globally, and not on the
+    // read, which buffers no body at all (ADR-0020).
+    let path = repository_root().join("crates/app-server/src/router.rs");
+    let router = shipped_code(&path, &read(&path));
+
+    assert!(
+        router.contains("const MAX_BODY_BYTES: usize = 1024;"),
+        "the global body limit must stay at a kilobyte"
+    );
+
+    // Each `.route(` registration as written, cut at the next one. The
+    // override belongs to a registration, not to the router: a
+    // `DefaultBodyLimit` on the outer builder would raise it for everything,
+    // including the asset fallback.
+    let registrations: Vec<&str> = router.split(".route(").skip(1).collect();
+    let note: Vec<&&str> = registrations
+        .iter()
+        .filter(|registration| registration.contains("\"/api/note\""))
+        .collect();
+
+    assert_eq!(
+        note.len(),
+        2,
+        "GET and PUT must be registered separately, or the limit cannot differ          between them: {note:#?}"
+    );
+
+    let write = note
+        .iter()
+        .find(|registration| registration.contains("put(routes::write_note)"))
+        .expect("a registration for the note write");
+    let read_note = note
+        .iter()
+        .find(|registration| registration.contains("get(routes::read_note)"))
+        .expect("a registration for the note read");
+
+    assert!(
+        write.contains("DefaultBodyLimit::max(MAX_NOTE_BODY_BYTES)"),
+        "the larger limit must be attached to the PUT itself: {write}"
+    );
+    assert!(
+        !write.contains("get(routes::read_note)"),
+        "the PUT registration must not also carry the read, which would put          both methods behind one limit again: {write}"
+    );
+    assert!(
+        !read_note.contains("DefaultBodyLimit"),
+        "GET /api/note reads no body and must keep the global kilobyte:          {read_note}"
+    );
+}
+
+#[test]
+fn the_participant_bundle_has_no_note_history_and_no_identifiers_in_its_calls() {
+    // Version history is the Host's (PRD section 17), and the participant
+    // bundle sends no identity: the session is the authority.
+    let root = repository_root();
 
     for file in sources(&root.join("apps/lan-ui/src"), &["ts", "tsx"]) {
         let contents = code_only(&read(&file));
-        for forbidden in ["/api/note", "writeNote", "fetchNote"] {
+        for forbidden in [
+            "note_versions",
+            "listNoteVersions",
+            "getNoteVersion",
+            "noteHistory",
+        ] {
             assert!(
                 !contents.contains(forbidden),
-                "{} reaches for a participant note API: that is step 8B",
+                "{} mentions `{forbidden}`: note history is the Host's (PRD section 17)",
                 file.display()
             );
         }
+    }
+
+    // The note calls specifically send no identity. `claimIdentity` is the
+    // deliberate exception and is not covered here: on the claim route a
+    // `participant_id` is a *target* chosen from a list, and the join token is
+    // the authority (ADR-0002, ADR-0016). On the note route there is no such
+    // thing to name.
+    let api = code_only(&read(&root.join("apps/lan-ui/src/api/lanApi.ts")));
+    let note_calls = api
+        .split("export function fetchOwnNote")
+        .nth(1)
+        .expect("the note calls");
+    for forbidden in [
+        "participant_id",
+        "meeting_id",
+        "note_id",
+        "expected_version",
+    ] {
+        assert!(
+            !note_calls.contains(forbidden),
+            "the participant note calls must send no identity, found `{forbidden}`"
+        );
     }
 }
 

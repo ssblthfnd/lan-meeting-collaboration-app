@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   LanError,
   LanEvent,
   LanJoinView,
+  LanNoteView,
   LanSessionView,
   ParticipantId,
 } from '@lan-meeting/contracts';
@@ -59,6 +60,64 @@ export function App() {
   const [claimError, setClaimError] = useState<LanError | null>(null);
   const joinToken = joinTokenFromUrl();
 
+  // The participant's own note. Held beside the session rather than inside it
+  // because it is fetched separately and changes on its own schedule.
+  const [note, setNote] = useState<LanNoteView | null>(null);
+  const [noteLoading, setNoteLoading] = useState(false);
+  /** Set when `note.changed` arrived while a draft was unsaved. */
+  const [noteChangedElsewhere, setNoteChangedElsewhere] = useState(false);
+  /**
+   * The newest version this bundle has seen, so its own save does not echo.
+   *
+   * A ref rather than state, for the same reason as `editingNote` below and for
+   * one more: it changes on every load, save and refresh, and the realtime
+   * effect reads it. As state it would be a dependency of that effect, and the
+   * socket would close and reopen every time the participant saved a note. The
+   * socket's lifetime belongs to the joined session, not to a note version.
+   *
+   * Nothing renders it, so state would buy nothing anyway.
+   */
+  const knownVersion = useRef(0);
+  /**
+   * Whether the note editor is open with text in it.
+   *
+   * A ref rather than state: it is read inside the realtime handler, and it
+   * must not re-subscribe the socket every time the participant opens or
+   * closes the editor.
+   */
+  const editingNote = useRef(false);
+
+  const loadNote = useCallback(async () => {
+    setNoteLoading(true);
+    try {
+      const own = await lanApi.fetchOwnNote();
+      setNote(own);
+      knownVersion.current = own?.version ?? 0;
+      setNoteChangedElsewhere(false);
+    } catch {
+      // A note that cannot be read right now is not a reason to throw the
+      // participant off the screen; the session refetch below decides whether
+      // the credential is still good.
+    } finally {
+      setNoteLoading(false);
+    }
+  }, []);
+
+  const saveNote = useCallback(
+    async (content: string): Promise<LanError | null> => {
+      try {
+        const written = await lanApi.writeOwnNote(content);
+        setNote(written);
+        knownVersion.current = written.version;
+        setNoteChangedElsewhere(false);
+        return null;
+      } catch (rejection) {
+        return rejection as LanError;
+      }
+    },
+    [],
+  );
+
   /** Load the identity list for the join token in the URL. */
   const loadJoin = useCallback(async (token: string) => {
     try {
@@ -104,9 +163,20 @@ export function App() {
     };
   }, [joinToken, loadJoin]);
 
-  // Once joined, follow the socket. Every event is a cue to re-read the
-  // session, which is the one place this screen's state comes from.
+  // Once joined, follow the socket. Every event is a cue to re-read from the
+  // backend, which is the one place this screen's state comes from.
   const joined = screen.kind === 'joined';
+
+  // Load the note as soon as the participant is in.
+  useEffect(() => {
+    if (joined) {
+      void loadNote();
+    } else {
+      setNote(null);
+      knownVersion.current = 0;
+      setNoteChangedElsewhere(false);
+    }
+  }, [joined, loadNote]);
 
   useEffect(() => {
     if (!joined) {
@@ -139,6 +209,27 @@ export function App() {
         if (event.type === 'session.revoked') {
           return;
         }
+
+        if (event.type === 'note.changed') {
+          // A participant only ever receives this for their own note - the
+          // audience stops anybody else's at the server (ADR-0018).
+          //
+          // A version this bundle already knows is its own save coming back,
+          // possibly on a second tab. Ignoring it is display logic over a
+          // value the server returned, not concurrency control: no
+          // `expected_version` is ever sent.
+          if (event.version <= knownVersion.current) {
+            return;
+          }
+          if (editingNote.current) {
+            // Never clobber an unsaved draft. The participant decides.
+            setNoteChangedElsewhere(true);
+          } else {
+            void loadNote();
+          }
+          return;
+        }
+
         void reread();
       },
       onRevoked: () => {
@@ -163,7 +254,10 @@ export function App() {
       cancelled = true;
       disconnect();
     };
-  }, [joined]);
+    // Deliberately not `knownVersion`: the socket belongs to the joined
+    // session, and a note version is read through a ref so that saving a note
+    // never tears the connection down (ADR-0018).
+  }, [joined, loadNote]);
 
   async function claim(participantId: ParticipantId) {
     if (joinToken === null) {
@@ -227,7 +321,20 @@ export function App() {
         />
       )}
 
-      {screen.kind === 'joined' && <JoinedView session={screen.session} />}
+      {screen.kind === 'joined' && (
+        <JoinedView
+          session={screen.session}
+          note={note}
+          noteLoading={noteLoading}
+          noteChangedElsewhere={noteChangedElsewhere}
+          onSaveNote={saveNote}
+          onReloadNote={() => void loadNote()}
+          onDismissNoteChange={() => setNoteChangedElsewhere(false)}
+          onNoteEditingChange={(editing) => {
+            editingNote.current = editing;
+          }}
+        />
+      )}
     </main>
   );
 }

@@ -25,7 +25,9 @@
  */
 
 import type {
+  ActorType,
   IanaTimeZone,
+  Iso8601Utc,
   IsoDate,
   IsoTime,
   MeetingId,
@@ -118,6 +120,31 @@ export interface LanSessionView {
   readonly acknowledged: boolean;
 }
 
+/**
+ * The participant's own note.
+ *
+ * Four fields, and the omissions are the design. No `note_id`: the participant
+ * addresses the note implicitly through their session, so an identifier they
+ * cannot use to address anything would be one more thing in a browser - the
+ * same reason {@link LanSessionView} carries no session id. No author id, no
+ * meeting or participant id, no lock state, nothing about the session.
+ *
+ * `last_author_type` stays because it answers a question the participant
+ * genuinely has: whether the Host changed their note underneath them
+ * (ADR-0020).
+ *
+ * `content` is GFM-subset Markdown and is rendered through
+ * `@lan-meeting/editor`, which builds DOM nodes rather than markup. It is
+ * never assigned as HTML.
+ */
+export interface LanNoteView {
+  readonly content: string;
+  /** The newest history version. Dense from 1. */
+  readonly version: number;
+  readonly updated_at: Iso8601Utc;
+  readonly last_author_type: ActorType;
+}
+
 /* -------------------------------------------------------------------------
  * Requests
  * ------------------------------------------------------------------------- */
@@ -132,6 +159,19 @@ export interface LanSessionView {
  */
 export interface LanClaimRequest {
   readonly participant_id: ParticipantId;
+}
+
+/**
+ * New content for the participant's own note.
+ *
+ * One field. There is deliberately no `participant_id`, no `meeting_id` and no
+ * `expected_version`: the backend derives identity from the authenticated
+ * session, the note is the caller's own by construction, and step 8B carries no
+ * optimistic concurrency. A field that does not exist cannot be trusted by
+ * mistake (ADR-0020).
+ */
+export interface LanNoteWriteRequest {
+  readonly content: string;
 }
 
 /* -------------------------------------------------------------------------
@@ -167,6 +207,8 @@ export interface LanError {
     | 'unauthenticated'
     | 'forbidden'
     | 'invalid_request'
+    /** The request body was larger than the route will read (HTTP 413). */
+    | 'payload_too_large'
     | 'internal';
   readonly category: LanErrorCategory;
   readonly message: string;

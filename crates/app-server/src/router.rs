@@ -20,13 +20,29 @@
 //!
 //! # Body limits
 //!
-//! The only body any route accepts is a single identifier. A kilobyte is
-//! generous, and it means an untrusted client on the LAN cannot make the Host
-//! allocate by sending a large payload (architecture rules section 10).
+//! Almost every body this server accepts is a single identifier. A kilobyte is
+//! generous for that, and it means an untrusted client on the LAN cannot make
+//! the Host allocate by sending a large payload (architecture rules section
+//! 10).
+//!
+//! A note is the exception, and it gets a **route-scoped** override rather than
+//! a raised global. Two separate limits, doing two separate jobs:
+//!
+//! | Limit | Job |
+//! | --- | --- |
+//! | 1 KiB, global | nobody makes the Host allocate for an identifier |
+//! | 192 KiB, `PUT /api/note` only | nobody makes the Host allocate for a note |
+//! | 64 KiB, `app-core::note` | the actual rule about how long a note may be |
+//!
+//! So a body between 64 and 192 KiB is read and then refused by the domain,
+//! with a message naming the limit and the measured size; a body past 192 KiB
+//! is refused by the transport with a 413. The domain remains the size
+//! authority, and every other route - including the asset fallback - keeps its
+//! kilobyte (ADR-0020).
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderValue};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -52,8 +68,16 @@ const CSP: &str = "default-src 'self'; \
                    form-action 'self'; \
                    frame-ancestors 'none'";
 
-/// Largest request body any route accepts.
+/// Largest request body most routes accept.
 const MAX_BODY_BYTES: usize = 1024;
+
+/// Largest request body `PUT /api/note` reads.
+///
+/// Three times the 64 KiB a note may contain, which covers JSON escaping of a
+/// body made entirely of quotes or backslashes and leaves room for the wrapper.
+/// It is a memory guard, not the note rule: content that fits here and not in
+/// 64 KiB is refused by `app-core::note`, which can say exactly by how much.
+const MAX_NOTE_BODY_BYTES: usize = 192 * 1024;
 
 /// Build the LAN application.
 ///
@@ -65,6 +89,25 @@ pub fn router(state: LanState) -> Router {
         .route("/api/join/{token}", get(routes::join))
         .route("/api/join/{token}/claim", post(routes::claim))
         .route("/api/session", get(routes::session))
+        // The participant's own note. No path segment and no identifier in
+        // the body: the meeting and the participant come from the resolved
+        // session, so addressing somebody else's note is inexpressible rather
+        // than merely refused (ADR-0020).
+        //
+        // Registered as two method routes on one path, which axum merges,
+        // because the larger body limit belongs to the **write** and not to
+        // the path. `GET` reads no body at all, so widening its limit would
+        // grant an allowance nothing needs - and an allowance nothing needs is
+        // the kind of thing a later handler quietly starts using.
+        .route("/api/note", get(routes::read_note))
+        // The only route in the application that may read more than a
+        // kilobyte. Applied closer to the handler than the global layer below,
+        // so it is the one this extractor sees; every other route, method and
+        // the asset fallback keep the kilobyte.
+        .route(
+            "/api/note",
+            put(routes::write_note).layer(DefaultBodyLimit::max(MAX_NOTE_BODY_BYTES)),
+        )
         // Server-to-client notification only. The credential travels in the
         // subprotocol, never in this path (ADR-0018).
         .route("/ws", get(ws::connect));

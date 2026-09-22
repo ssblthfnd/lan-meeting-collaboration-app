@@ -108,9 +108,9 @@ These apply to every step in this file.
 | Step 5 | Remote form foundation | COMPLETE | `8d844b8` (see note) |
 | Step 6 | LAN server & participant join | COMPLETE | `334cdf2` |
 | Step 7 | Realtime updates & participant presence | COMPLETE | `f5e1b1f` |
-| Step 8 | Host note editing & version history | COMPLETE | uncommitted |
-| Step 8B | Participant note editing & LAN note API | **NEXT** | — |
-| Step 9 | Remote form generation | PLANNED | — |
+| Step 8 | Host note editing & version history | COMPLETE | `27349ec` |
+| Step 8B | Participant note editing over LAN | COMPLETE | uncommitted |
+| Step 9 | Remote form generation | **NEXT** | — |
 | Step 10 | Remote submission import pipeline | PLANNED | — |
 | Step 11 | Meeting lock | PLANNED | — |
 | Step 12 | Export: Markdown and TXT / AI Context | PLANNED | — |
@@ -477,7 +477,7 @@ channel ever becoming a second, weaker copy of the API.
 
 ## Step 8 — Host Note Editing & Version History
 
-**Status: COMPLETE** (implemented, uncommitted at the time of writing)
+**Status: COMPLETE** (`27349ec`)
 
 This section is the implementation prompt Step 8 was executed from. It is kept
 verbatim as the record of the approved scope; ADR-0019 records what was decided
@@ -760,40 +760,349 @@ Do **not** commit. Do **not** push. Leave the working tree available for review.
 
 ---
 
-## Step 8B — Participant Note Editing & LAN Note API
+## Step 8B — Participant Note Editing over LAN
 
-**Status: NEXT — NOT IMPLEMENTED**
+**Status: COMPLETE** (implemented, uncommitted at the time of writing)
+
+Everything below is the approved design, and it was implemented as written:
+every decision D1-D7 stands unchanged, `app-core` was not touched, and no
+migration was created. ADR-0020 records the implementation. The guard that
+asserted this step had not happened was replaced by five that assert the shape
+it took.
 
 Added as decision D3 during the Step 8 design review: PRD section 15 requires a
-participant to be able to create and edit their own note during `OPEN`, and the
-original roadmap had no step for it.
+participant to be able to create and edit their own note, and the original
+roadmap had no step for it.
 
-Intended future scope:
+### Approved architecture
 
-- participant note UI in `apps/lan-ui`,
-- LAN note read and write endpoints,
-- the authenticated participant actor, resolved as every other LAN request
-  already resolves it,
-- own-note authorization — a participant may write their own note and no other,
-  which `authorize()` already enforces,
-- realtime `note.changed` handling on the participant side,
-- appropriate request and body limits (the current LAN body limit is 1 KiB and a
-  note body will not fit in it),
-- lock enforcement, re-read inside the mutating transaction as usual,
-- the participant-side Markdown editor, reusing `packages/editor` unchanged.
+```text
+apps/lan-ui
+  └─ authenticated LAN HTTP API
+       └─ existing Participant extractor
+            └─ Actor::Participant { meeting_id, participant_id, session_id }
+                 └─ existing Domain::write_note
+                      └─ SQLite transaction
+                           notes + note_versions + audit_logs
+                         COMMIT
+                      └─ existing note.changed
+                           ├─ participant WebSocket (own sockets only)
+                           └─ Host Tauri event
+```
 
-What Step 8 already put in place for it:
+**No `app-core` or domain redesign is required.** `authorize()` already approves
+`Actor::Participant` for `Operation::WriteNote { participant_id }` when the
+target participant id equals the actor's own, and refuses everything else by
+default. The domain remains the final authorization boundary.
+
+### Approved route design
+
+```text
+GET /api/note      -> the participant's own note, or null
+PUT /api/note      -> replace it
+```
+
+**Not** `/api/meetings/{meeting_id}/me/note`.
+
+The meeting and the participant are already established by the authenticated
+session, so the route accepts **no participant id and no meeting id**. That
+makes identity substitution structurally inexpressible at the HTTP layer rather
+than merely checked, and it matches the principle `/api/session` already
+follows: a path with nothing on it is a path with nothing to forge.
+
+The browser must never send participant identity as an authority-bearing
+parameter.
+
+### Approved `GET` behaviour
+
+- Authentication: the existing `Participant` extractor.
+- Identity source: the authenticated session row.
+- Query scope: `meeting_id` + `participant_id`, both from the actor.
+- Response: the note DTO when one exists, `null` before the participant has
+  written anything.
+- **`GET` remains available when the meeting is `LOCKED`.** A locked meeting
+  prevents mutation, not reading.
+
+### Approved `PUT` behaviour
+
+Request body, in full:
+
+```json
+{ "content": "..." }
+```
+
+It must **not** carry `participant_id`, `meeting_id`, `note_id`, `session_id` or
+`expected_version`. Identity is derived from the session.
+
+The write uses the existing `Domain::write_note` with unchanged semantics:
+authorization checked by the domain, the lock re-read **inside** the
+transaction, Markdown validated inside the transaction, the single note
+upserted, a version appended, an audit entry appended, commit, and only then
+`note.changed`.
+
+Last-write-wins remains the established behaviour. **No optimistic concurrency
+is introduced.**
+
+### Approved participant note DTO
+
+Carries: `content`, `version`, `updated_at`, `last_author_type`.
+
+Does **not** carry: `note_id`, `last_author_id`, any Host-only note metadata, or
+version history.
+
+`last_author_type` is retained so a participant can tell whether their current
+note was last changed by themselves, by the Host, or by another approved
+mutation source such as a future remote import. Participant version history
+remains Host-only (PRD section 17 assigns history to the Host).
+
+### Approved database read model
+
+Add a dedicated `ParticipantQueries::own_note(..)`.
+
+Do **not** reuse `HostQueries::note(..)`: read models are audience-specific
+under ADR-0014, and the Host's shape carries fields a participant has no need
+for. The participant query returns only the DTO's fields.
+
+**No migration is required.**
+
+### Approved realtime behaviour
+
+No WebSocket architecture change. `DomainEvent::NoteChanged` and its audience
+routing stay exactly as Step 7 and Step 8 left them.
+
+The event carries metadata only — `meeting_id`, `participant_id`, `note_id`,
+`version`, timestamp — and **never note content**. A participant receives
+`note.changed` for their own note and for no other; the existing session-scoped
+audience filtering remains authoritative.
+
+Participant editor behaviour, mirroring the Host:
+
+- **clean editor** — refetch the note;
+- **dirty editor** — preserve the local draft, show a conflict/update notice,
+  and offer *Keep editing* or *Discard mine and reload*.
+
+No optimistic concurrency, and no `expected_version` is ever sent. A
+participant's own save echo may be ignored when the event's version is already
+represented by the locally known saved version; that is client-side display
+logic over a value the server returned, not a concurrency control.
+
+### Approved body-limit strategy
+
+The global LAN body limit stays at **1024 bytes**, unchanged, for every other
+route and the asset fallback.
+
+A route-scoped override applies to `/api/note` only, with a transport cap of
+**192 KiB**.
+
+The authoritative note-size rule remains **64 KiB of UTF-8 bytes**, enforced in
+`app-core::note`. The two layers are deliberately different things:
+
+| Layer | Purpose |
+| --- | --- |
+| 192 KiB route cap | memory and request protection |
+| 64 KiB domain rule | the actual note-size rule |
+
+So a payload between 64 KiB and 192 KiB reaches the domain validator and is
+refused by the 64 KiB rule with a message naming both the limit and the measured
+size. A payload above the route cap is refused by the transport with HTTP 413.
+
+### Approved error behaviour
+
+- Add `ApiError::payload_too_large()` and its LAN error-contract representation
+  for HTTP 413.
+- Existing validation refusals remain HTTP 400.
+- A `LOCKED` mutation maps through the existing meeting-lock convention.
+- Malformed JSON should be mapped consistently as `invalid_request` where the
+  existing route infrastructure permits it.
+
+**`routes::claim` is explicitly out of scope.** Its pre-existing malformed-JSON
+behaviour must not be modified in Step 8B.
+
+### Approved participant UI
+
+Reuse `packages/editor` **unchanged**. Do not create a second Markdown parser,
+serializer, validator or renderer.
+
+The own-note panel provides: the rendered note, *Edit*, a textarea, a live
+preview, *Save*, *Cancel*, a character count, a byte count, validation and save
+error state, last-changed information, and a locked read-only state.
+
+Locked state is derived from the meeting/session state already loaded. Backend
+enforcement remains authoritative; the read-only UI is presentation.
+
+### Approved note-links decision
+
+Participant note links remain **DEFERRED**.
+
+PRD section 5.2 permits a participant up to five links, but the note-link
+schema and behaviour are not sufficiently resolved for Step 8B — in particular
+`note_versions` versions content only, and what a version means for links is
+still open (ADR-0019, decision 9).
+
+This stays an explicitly tracked future item. **The existing ADR must not be
+altered merely to remove the requirement.**
+
+### Approved audit and version semantics
+
+A participant write uses the existing mutation path and atomically creates:
+
+1. the note row,
+2. a `note_versions` row,
+3. an `audit_logs` entry.
+
+With `created_by_type = PARTICIPANT` and `created_by = <participant id>`, which
+the schema's `CHECK ((created_by_type = 'HOST') = (created_by IS NULL))` already
+requires.
+
+Audit metadata must not contain note body content. `note.changed` is emitted
+only after a successful commit; a failed mutation creates neither a version nor
+an audit entry.
+
+### Approved lifecycle behaviour
+
+Under the current claim flow a participant session can only exist for an `OPEN`
+meeting, because `claim_identity` calls `ensure_open()` and no transition
+returns a meeting to `DRAFT`. Participants therefore edit during `OPEN`,
+`LOCKED` rejects mutation at the backend, and `GET` remains available after the
+lock. **No lifecycle change is required.**
+
+### Approved security constraints
+
+Step 8B must preserve all of these:
+
+- no participant id from the request body;
+- no participant id from the URL;
+- no meeting id from the request body;
+- no meeting id from the URL;
+- no session credential in a query string;
+- revoked sessions cannot authenticate;
+- a participant cannot access another participant's note;
+- a participant cannot mutate another participant's note;
+- no note body in WebSocket events;
+- no global body-limit increase;
+- no direct database access from `app-server`;
+- no bypass of the `app-core` mutation boundary;
+- no validation bypass;
+- lock enforcement inside the transaction;
+- no unsafe HTML rendering;
+- the shared editor implementation only.
+
+### Expected implementation file plan
+
+Change only what the implementation actually requires, from this list:
+
+```text
+crates/app-db/src/participant_query.rs
+crates/app-db/src/lib.rs
+crates/app-server/src/dto.rs
+crates/app-server/src/routes.rs
+crates/app-server/src/router.rs
+crates/app-server/src/error.rs
+crates/app-server/src/state.rs        (only if actually required)
+crates/app-server/tests/http_contract.rs
+crates/app-server/tests/realtime_socket.rs
+crates/app-db/tests/notes.rs
+packages/contracts/src/lan.ts
+apps/lan-ui/package.json
+apps/lan-ui/src/api/lanApi.ts
+apps/lan-ui/src/components/Markdown.tsx
+apps/lan-ui/src/components/NotePanel.tsx
+apps/lan-ui/src/components/JoinedView.tsx
+apps/lan-ui/src/App.tsx
+apps/lan-ui/src/styles.css
+src-tauri/tests/boundaries.rs
+docs/adr/0020-participant-note-editing.md
+```
+
+### Expected untouched areas
+
+```text
+crates/app-core/**
+crates/app-db/migrations/**
+crates/app-db/src/query.rs
+crates/app-export/**
+crates/app-remote/**
+src-tauri/src/**
+packages/editor/**
+apps/host-ui/**
+apps/remote-form/**
+scripts/check-remote-form-offline.mjs
+docs/adr/0001 - 0019
+```
+
+If implementation reveals that one of these must change, **stop and report it as
+an unresolved design issue** rather than silently expanding scope.
+
+### Approved test scope
+
+**Domain and database.** Participant can write their own note; cannot write
+another participant's; cannot act in another meeting; a revoked session cannot
+write; `OPEN` allows the write; `LOCKED` rejects it; invalid Markdown is
+rejected; over 64 KiB is rejected; participant version metadata is correct; a
+successful write creates the version and the audit entry atomically; a failed
+write creates neither.
+
+**LAN HTTP.** Authenticated `GET` of the own note; `GET` returns null before the
+first write; authenticated `PUT` creates; authenticated `PUT` updates;
+unauthenticated `GET`/`PUT` rejected; revoked session rejected; a participant
+cannot substitute another identity; another participant can neither read nor
+write this note; `GET` works while `LOCKED`; `PUT` fails while `LOCKED`; the
+global 1 KiB limit still applies to other routes; the note route accepts
+legitimate payloads below 64 KiB; a payload above 64 KiB reaches the
+authoritative validator; a payload above 192 KiB is refused by the transport; an
+unauthenticated oversized request never becomes an authenticated note operation;
+CRLF normalisation remains correct.
+
+**Realtime.** An own-note change emits `note.changed`; the event carries no note
+body; another participant receives no unauthorized event or content; revoked
+live-session behaviour is unchanged; a locked mutation emits no success event.
+
+**UI.** A participant can read, edit, save, cancel and preview their own note; a
+clean editor reacts to a remote change; a dirty editor preserves the draft and
+offers reload/discard; a locked editor is read-only; validation and save errors
+are visible; Markdown rendering uses the shared safe renderer.
+
+**Guards.** Preserve every existing boundary and security guard; no HTML sink;
+no duplicate Markdown renderer; no participant history route; no participant
+identity parameter in the note route; the offline remote-form guard and the
+`shipped_code` guard remain unchanged.
+
+### Explicitly not part of Step 8B
+
+Participant note-links CRUD, participant note history, restore, remote-form note
+integration, remote import changes, Markdown/TXT/AI Context export, PDF, AI
+integration, the meeting lock command, optimistic concurrency,
+`expected_version`, any WebSocket redesign, any authentication redesign, cloud
+functionality, Step 9, and any unrelated cleanup.
+
+### Design decisions — all resolved
+
+| # | Decision | Outcome |
+| --- | --- | --- |
+| D1 | Route shape `/api/note` with no identifiers | **APPROVED** |
+| D2 | `ApiError::payload_too_large()` / HTTP 413 | **APPROVED** |
+| D3 | Include `last_author_type` in the participant DTO | **APPROVED** |
+| D4 | Participant note links | **DEFERRED** |
+| D5 | `routes::claim` malformed-JSON inconsistency | **OUT OF SCOPE** |
+| D6 | 192 KiB route-level transport cap | **APPROVED** |
+| D7 | `GET` the note while `LOCKED` | **APPROVED** |
+
+No design blocker remains. If source inspection during implementation uncovers a
+contradiction with the authoritative architecture, stop and report it rather
+than resolving it by weakening a higher-authority requirement.
+
+### What Step 8 already put in place
 
 - `packages/editor` is framework-neutral and needs no change to be used by
   `apps/lan-ui`;
-- `authorize()` already permits `Actor::Participant` to write their own note
-  and refuses every other one;
+- `authorize()` already permits `Actor::Participant` to write their own note and
+  refuses every other one;
 - `app-core::note` already validates content for whichever transport calls it;
-- `note.changed` already reaches the note's owner over the participant socket.
+- `note.changed` already reaches the note's owner, and only the owner, over the
+  participant socket.
 
-What is missing is a route, a body limit larger than the current 1 KiB, and the
-participant-side surface. A boundary guard asserts no such route exists yet, so
-it cannot appear without the step being taken deliberately.
+What is missing is the route, the route-scoped body limit, the participant read
+model, the DTOs and the participant-side surface.
 
 ---
 
@@ -867,12 +1176,12 @@ Details beyond the above are **TBD**.
 
 ## Current Execution Point
 
-> Phase 1 is complete through Step 8, which is implemented and awaiting review
-> in the working tree. Step 8B — Participant Note Editing & LAN Note API — is
-> the next implementation step and must be executed separately.
+> Phase 1 is complete through Step 8B, which is implemented and awaiting review
+> in the working tree. Step 9 — Remote Form Generation — is the next
+> implementation step and must be executed separately.
 
 Repository state:
 
-- branch `main`, `HEAD` = `f5e1b1fd54efde089da7fc2413f0ef7f2bdafdb2`
-- Step 8 changes are in the working tree, uncommitted, awaiting review
-- Rust and TypeScript suites both passing; Vitest arrived with Step 8 (D4)
+- branch `main`, `HEAD` = `27349ec0f31f081c1bfa64a79ca5053f76baa9b3`
+- Step 8 committed and pushed; Step 8B changes are uncommitted, awaiting review
+- Rust and TypeScript suites both passing

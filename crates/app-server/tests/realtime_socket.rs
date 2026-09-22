@@ -899,6 +899,116 @@ async fn being_connected_grants_no_authority() {
 }
 
 /* -------------------------------------------------------------------------
+ * Notes written by the participant themselves
+ * ------------------------------------------------------------------------- */
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_participants_own_note_write_reaches_their_socket_and_carries_no_body() {
+    // The participant writes over HTTP and is told over the socket. The frame
+    // names the note and the version; the Markdown is fetched back through the
+    // read path, where the audience rules are applied again (ADR-0020).
+    let mut lan = Lan::start(&["Budi Santoso"]).await;
+    let participant_id = lan.participants[0];
+    let token = lan.claim_nth(0);
+
+    let mut socket = lan.connect(&token).await;
+
+    let secret = "Budget overrun of 40 percent, do not circulate";
+    let response = put_note(lan.port, &token, secret).await;
+    assert!(response.contains("200 OK"), "{response}");
+
+    let frame = next_frame(&mut socket).await;
+    assert_eq!(kind(&frame), "note.changed");
+    assert_eq!(
+        frame["participant_id"].as_str().unwrap(),
+        participant_id.to_storage()
+    );
+    assert_eq!(frame["version"].as_i64(), Some(1));
+    assert!(!frame.to_string().contains("Budget overrun"), "{frame}");
+
+    lan.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn one_participants_note_never_reaches_another_participants_socket() {
+    // PRD section 5.2: a participant may not see another participant's note.
+    // The audience stops the event at the server, so there is nothing for the
+    // other bundle to filter or accidentally render.
+    let mut lan = Lan::start(&["Alice Anwar", "Bob Basuki"]).await;
+    let alice = lan.participants[0];
+    let bob = lan.participants[1];
+
+    let alice_token = lan.claim(lan.meeting_id, alice);
+    let bob_token = lan.claim(lan.meeting_id, bob);
+    let _alices = lan.connect(&alice_token).await;
+    let mut bobs = lan.connect(&bob_token).await;
+
+    put_note(lan.port, &alice_token, "alice's private note").await;
+
+    // Bob's socket sees his own barrier next, never Alice's note event.
+    lan.barrier(bob);
+    assert_eq!(kind(&next_frame(&mut bobs).await), "claim.approved");
+
+    lan.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_refused_by_the_lock_emits_no_event() {
+    // The event follows the commit. A refused mutation announces nothing.
+    let mut lan = Lan::start(&["Budi Santoso"]).await;
+    let participant_id = lan.participants[0];
+    let token = lan.claim_nth(0);
+
+    let mut socket = lan.connect(&token).await;
+    lan.domain
+        .lock_meeting(&Actor::Host, lan.meeting_id)
+        .expect("lock");
+    assert_eq!(kind(&next_frame(&mut socket).await), "meeting.locked");
+
+    let response = put_note(lan.port, &token, "written after the lock").await;
+    assert!(response.contains("409"), "{response}");
+
+    // A marker published straight onto the channel, because the usual barrier
+    // acknowledges a claim and a locked meeting refuses that too. If the
+    // refused write had announced anything, it would sit ahead of this.
+    lan.realtime.publish(&DomainEvent::ClaimApproved {
+        meeting_id: lan.meeting_id,
+        participant_id,
+        at: UtcTimestamp::now(),
+    });
+    assert_eq!(kind(&next_frame(&mut socket).await), "claim.approved");
+
+    lan.stop().await;
+}
+
+/// `PUT /api/note`, written by hand so the realtime suite needs no HTTP client.
+async fn put_note(port: u16, token: &str, content: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let body = serde_json::json!({ "content": content }).to_string();
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect");
+    let request = format!(
+        "PUT /api/note HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("send the request");
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .await
+        .expect("read the response");
+    response
+}
+
+/* -------------------------------------------------------------------------
  * Lock
  * ------------------------------------------------------------------------- */
 

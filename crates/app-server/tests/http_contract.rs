@@ -22,6 +22,7 @@ use app_server::state::LanState;
 use app_server::{hash_token, router, Realtime};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
+use futures_util::stream;
 use http_body_util::BodyExt;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -187,6 +188,46 @@ impl Lan {
             .send(builder.body(Body::empty()).expect("request"))
             .await;
         (status, body)
+    }
+
+    /// `GET /api/note` with an optional bearer token.
+    async fn read_note(&self, bearer: Option<&str>) -> (StatusCode, Value) {
+        let mut builder = Request::builder().uri("/api/note");
+        if let Some(token) = bearer {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let (status, body, _) = self
+            .send(builder.body(Body::empty()).expect("request"))
+            .await;
+        (status, body)
+    }
+
+    /// `PUT /api/note` with an optional bearer token and a raw body.
+    async fn put_note_raw(&self, bearer: Option<&str>, body: String) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method("PUT")
+            .uri("/api/note")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = bearer {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let (status, response, _) = self
+            .send(builder.body(Body::from(body)).expect("request"))
+            .await;
+        (status, response)
+    }
+
+    /// `PUT /api/note` with `content` serialised properly.
+    async fn put_note(&self, bearer: Option<&str>, content: &str) -> (StatusCode, Value) {
+        let body = serde_json::json!({ "content": content }).to_string();
+        self.put_note_raw(bearer, body).await
+    }
+
+    /// Lock the meeting through the domain, as the Host would.
+    fn lock(&self) {
+        self.domain
+            .lock_meeting(&Actor::Host, self.meeting_id)
+            .expect("lock");
     }
 
     /// Claim an identity and return the session token it produced.
@@ -611,4 +652,409 @@ async fn the_host_bundle_is_never_served_over_the_lan() {
     // A Host asset path is a missing asset, not a page.
     let (status, _, _) = lan.get("/assets/host-ui.js").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// The participant's own note
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn reading_a_note_requires_a_session() {
+    let lan = Lan::new(&["Budi Santoso"]);
+
+    for bearer in [None, Some("not-a-token"), Some(&"f".repeat(64)[..])] {
+        let (status, body) = lan.read_note(bearer).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["kind"], "unauthenticated");
+    }
+}
+
+#[tokio::test]
+async fn writing_a_note_requires_a_session() {
+    let lan = Lan::new(&["Budi Santoso"]);
+
+    for bearer in [None, Some("not-a-token")] {
+        let (status, body) = lan.put_note(bearer, "anything").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["kind"], "unauthenticated");
+    }
+}
+
+#[tokio::test]
+async fn a_participant_without_a_note_reads_null() {
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    let (status, body) = lan.read_note(Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.is_null(), "{body}");
+}
+
+#[tokio::test]
+async fn a_participant_can_write_and_then_read_their_own_note() {
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    let (status, body) = lan.put_note(Some(&token), "## Agenda\n\nBudget.").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["content"], "## Agenda\n\nBudget.");
+    assert_eq!(body["version"], 1);
+    // A participant's own write is attributed to them, not to the Host.
+    assert_eq!(body["last_author_type"], "PARTICIPANT");
+
+    let (status, read) = lan.read_note(Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    assert_eq!(read["content"], "## Agenda\n\nBudget.");
+    assert_eq!(read["version"], 1);
+}
+
+#[tokio::test]
+async fn a_second_write_replaces_the_note_and_advances_the_version() {
+    // Exactly one note per participant (ADR-0003), so this is an upsert.
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    lan.put_note(Some(&token), "first").await;
+    let (status, body) = lan.put_note(Some(&token), "second").await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["content"], "second");
+    assert_eq!(body["version"], 2);
+}
+
+#[tokio::test]
+async fn the_note_response_carries_nothing_it_should_not() {
+    // Four fields, and the omissions are the design: no note id, no author id,
+    // no meeting or participant id, no lock state, nothing about the session
+    // (ADR-0020).
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+    let (_, body) = lan.put_note(Some(&token), "content").await;
+
+    let object = body.as_object().expect("an object");
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["content", "last_author_type", "updated_at", "version"]
+    );
+
+    let serialized = body.to_string();
+    assert!(
+        !serialized.contains(&lan.meeting_id.to_storage()),
+        "{serialized}"
+    );
+    assert!(
+        !serialized.contains(&lan.participants[0].to_storage()),
+        "{serialized}"
+    );
+    assert!(!serialized.contains(&token), "{serialized}");
+}
+
+#[tokio::test]
+async fn a_participant_cannot_reach_another_participants_note() {
+    // There is no parameter to substitute: the route has no path segment and
+    // the body has one field. Each session sees its own note and nothing else.
+    let lan = Lan::new(&["Alice Anwar", "Bob Basuki"]);
+    let alice = lan.claim_ok(0).await;
+    let bob = lan.claim_ok(1).await;
+
+    lan.put_note(Some(&alice), "alice's private note").await;
+    lan.put_note(Some(&bob), "bob's private note").await;
+
+    let (_, alices) = lan.read_note(Some(&alice)).await;
+    let (_, bobs) = lan.read_note(Some(&bob)).await;
+
+    assert_eq!(alices["content"], "alice's private note");
+    assert_eq!(bobs["content"], "bob's private note");
+}
+
+#[tokio::test]
+async fn a_participant_id_in_the_body_is_not_authority() {
+    // The shape of the attack this route is built to be immune to. The extra
+    // field is ignored by the deserializer, and the write lands on the session
+    // that authenticated it.
+    let lan = Lan::new(&["Alice Anwar", "Bob Basuki"]);
+    let alice = lan.claim_ok(0).await;
+    let bob = lan.claim_ok(1).await;
+    lan.put_note(Some(&bob), "bob's own note").await;
+
+    let forged = serde_json::json!({
+        "content": "written by alice, aimed at bob",
+        "participant_id": lan.participants[1].to_storage(),
+        "meeting_id": lan.meeting_id.to_storage(),
+    })
+    .to_string();
+
+    let (status, body) = lan.put_note_raw(Some(&alice), forged).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Alice's own note took the content; Bob's is untouched.
+    assert_eq!(body["content"], "written by alice, aimed at bob");
+    let (_, bobs) = lan.read_note(Some(&bob)).await;
+    assert_eq!(bobs["content"], "bob's own note");
+    assert_eq!(bobs["version"], 1);
+}
+
+#[tokio::test]
+async fn a_revoked_session_can_neither_read_nor_write_a_note() {
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+    lan.put_note(Some(&token), "before the revocation").await;
+
+    lan.domain
+        .revoke_session(&Actor::Host, lan.meeting_id, lan.participants[0])
+        .expect("revoke");
+
+    let (status, body) = lan.read_note(Some(&token)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    let (status, body) = lan.put_note(Some(&token), "after").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+}
+
+#[tokio::test]
+async fn a_locked_meeting_still_serves_the_note_but_refuses_a_write() {
+    // A locked meeting is finished, not secret. The notes are what it was
+    // locked to keep, and the participant wrote this one (ADR-0020).
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+    lan.put_note(Some(&token), "written while open").await;
+
+    lan.lock();
+
+    let (status, body) = lan.read_note(Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["content"], "written while open");
+
+    let (status, body) = lan.put_note(Some(&token), "written after the lock").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["kind"], "meeting_not_open");
+
+    // And the note is unchanged.
+    let (_, after) = lan.read_note(Some(&token)).await;
+    assert_eq!(after["content"], "written while open");
+    assert_eq!(after["version"], 1);
+}
+
+#[tokio::test]
+async fn content_the_domain_refuses_is_refused_here() {
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    for bad in [
+        "",
+        "   ",
+        "<script>alert(1)</script>",
+        "</div>",
+        "[click](javascript:alert(1))",
+        "before\u{0}after",
+    ] {
+        let (status, body) = lan.put_note(Some(&token), bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}: {body}");
+        assert_eq!(body["kind"], "invalid_request", "{bad:?}");
+    }
+
+    // Nothing was stored by any of them.
+    let (_, read) = lan.read_note(Some(&token)).await;
+    assert!(read.is_null(), "{read}");
+}
+
+#[tokio::test]
+async fn ordinary_arithmetic_is_not_refused_as_html() {
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    for good in ["a < b", "2 < 3", "`<script>` in a code span"] {
+        let (status, body) = lan.put_note(Some(&token), good).await;
+        assert_eq!(status, StatusCode::OK, "{good:?}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn malformed_json_is_a_validation_refusal() {
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    for body in ["not json at all", "{\"content\":}", "{}", "[]"] {
+        let (status, response) = lan.put_note_raw(Some(&token), body.to_owned()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {response}");
+        assert_eq!(response["kind"], "invalid_request", "{body}");
+    }
+}
+
+#[tokio::test]
+async fn a_note_over_the_domain_limit_reaches_the_domain_and_is_refused_there() {
+    // Between 64 KiB and the route's 192 KiB: the transport reads it, and the
+    // domain refuses it with the limit and the measured size. That layering is
+    // the point of having two numbers (ADR-0020).
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    let (status, body) = lan.put_note(Some(&token), &"a".repeat(70_000)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["kind"], "invalid_request");
+}
+
+#[tokio::test]
+async fn a_note_at_the_domain_limit_is_accepted() {
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    let (status, body) = lan.put_note(Some(&token), &"a".repeat(65_536)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], 1);
+}
+
+#[tokio::test]
+async fn a_body_past_the_route_limit_is_refused_by_the_transport() {
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    let (status, body) = lan.put_note(Some(&token), &"a".repeat(250_000)).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(body["kind"], "payload_too_large");
+}
+
+#[tokio::test]
+async fn a_body_that_fails_mid_read_is_not_reported_as_too_large() {
+    // `BytesRejection` covers *every* way a body can fail to buffer, and only
+    // one of them is a size problem. A stream that dies part-way through is
+    // not: answering it with 413 "shorten your note and try again" would name
+    // a cause that is not there, and the note may have been well under the
+    // limit. Only the length-limit rejection earns that status (ADR-0020).
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    // A body that yields no bytes and then an error, which is what a
+    // connection dropping mid-request looks like to the extractor.
+    let torn = Body::from_stream(stream::once(async {
+        Err::<&'static str, std::io::Error>(std::io::Error::other("connection reset"))
+    }));
+
+    let (status, body, _) = lan
+        .send(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/note")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(torn)
+                .expect("request"),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["kind"], "invalid_request", "{body}");
+
+    // And nothing was written by a request that never arrived.
+    let (_, stored) = lan.read_note(Some(&token)).await;
+    assert!(stored.is_null(), "{stored}");
+}
+
+#[tokio::test]
+async fn an_unauthenticated_oversized_body_is_refused_before_it_is_read() {
+    // The extractor order is load-bearing: `Participant` runs before the body
+    // is touched, so raising the limit for this route does not let an
+    // unauthenticated caller make the Host allocate 192 KiB.
+    let lan = Lan::new(&["Budi Santoso"]);
+
+    let (status, body) = lan.put_note(None, &"a".repeat(250_000)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["kind"], "unauthenticated");
+}
+
+#[tokio::test]
+async fn the_kilobyte_limit_still_governs_every_other_route() {
+    // The note route's override must not have widened anything else.
+    let lan = Lan::new(&["Budi Santoso"]);
+
+    let oversized = serde_json::json!({ "participant_id": "x".repeat(4096) }).to_string();
+    let (status, _, _) = lan
+        .send(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/join/{}/claim", lan.join_token))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(oversized))
+                .expect("request"),
+        )
+        .await;
+
+    assert_ne!(status, StatusCode::CREATED);
+    assert!(
+        status == StatusCode::PAYLOAD_TOO_LARGE || status.is_client_error(),
+        "the claim route must still refuse a body over a kilobyte, got {status}"
+    );
+}
+
+#[tokio::test]
+async fn windows_line_endings_are_normalised_at_the_transport() {
+    // A browser can submit CRLF and the domain refuses a carriage return as a
+    // control character; a participant should not be told about a character
+    // they cannot see.
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    let (status, body) = lan.put_note(Some(&token), "line one\r\nline two\r\n").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["content"], "line one\nline two\n");
+}
+
+#[tokio::test]
+async fn nothing_else_about_the_content_is_normalised() {
+    // The stored note is what was typed (ADR-0019).
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    let typed = "#  Odd   spacing\n\n\n\n-    loose    marker";
+    let (status, body) = lan.put_note(Some(&token), typed).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["content"], typed);
+}
+
+#[tokio::test]
+async fn a_pending_claim_may_write_a_note() {
+    // Approval is acknowledgement, not a gate (ADR-0016). A participant whose
+    // claim the Host has not looked at can work.
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    let (status, body) = lan.put_note(Some(&token), "written while pending").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn the_note_routes_never_appear_in_a_url_with_an_identifier() {
+    // The whole point of the route shape: there is nothing to address. A path
+    // carrying a participant id is not a route this server has.
+    let lan = Lan::new(&["Budi Santoso"]);
+    let token = lan.claim_ok(0).await;
+
+    for path in [
+        format!("/api/note/{}", lan.participants[0].to_storage()),
+        format!("/api/meetings/{}/note", lan.meeting_id.to_storage()),
+        format!(
+            "/api/participants/{}/note",
+            lan.participants[0].to_storage()
+        ),
+    ] {
+        let (status, body, _) = lan
+            .send(
+                Request::builder()
+                    .uri(&path)
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await;
+        // The single-page fallback answers unknown paths, so the status is
+        // not the interesting part. What matters is that no note came back:
+        // these paths are not API routes, and an identifier in a URL buys
+        // nothing.
+        let _ = status;
+        assert!(
+            body["content"].is_null() && body["version"].is_null(),
+            "{path} served a note: {body}"
+        );
+    }
 }

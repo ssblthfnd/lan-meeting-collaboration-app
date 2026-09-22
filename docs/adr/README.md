@@ -25,6 +25,7 @@ history.
 | [0017](0017-local-qr-generation.md) | Local QR generation | Accepted |
 | [0018](0018-realtime-events-and-presence.md) | Realtime events, audiences and presence | Accepted |
 | [0019](0019-note-editing-and-markdown-subset.md) | Note editing, the Markdown subset and safe rendering | Accepted |
+| [0020](0020-participant-note-editing.md) | Participant note editing over the LAN | Accepted |
 
 Template:
 

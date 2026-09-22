@@ -1,16 +1,10 @@
-import type { LanSessionView } from '@lan-meeting/contracts';
+import type { LanError, LanNoteView, LanSessionView } from '@lan-meeting/contracts';
 
 import { MeetingHeader } from './MeetingHeader';
+import { NotePanel } from './NotePanel';
 
 /**
  * Confirmation that you are in the meeting, and as whom.
- *
- * # What is deliberately not here
- *
- * Note writing. It needs the shared editor and the GFM subset (ADR-0007), which
- * arrive with their own roadmap step, and a half-built editor would be worse
- * than an honest "not yet". The screen says so rather than leaving someone
- * waiting for something to appear.
  *
  * # On acknowledgement
  *
@@ -29,7 +23,25 @@ import { MeetingHeader } from './MeetingHeader';
  * or edited the bundle is refused just the same (architecture rules section
  * 15). The socket keeps the screen honest; it does not keep the meeting safe.
  */
-export function JoinedView({ session }: { readonly session: LanSessionView }) {
+export function JoinedView({
+  session,
+  note,
+  noteLoading,
+  noteChangedElsewhere,
+  onSaveNote,
+  onReloadNote,
+  onDismissNoteChange,
+  onNoteEditingChange,
+}: {
+  readonly session: LanSessionView;
+  readonly note: LanNoteView | null;
+  readonly noteLoading: boolean;
+  readonly noteChangedElsewhere: boolean;
+  readonly onSaveNote: (content: string) => Promise<LanError | null>;
+  readonly onReloadNote: () => void;
+  readonly onDismissNoteChange: () => void;
+  readonly onNoteEditingChange: (editing: boolean) => void;
+}) {
   const { participant, meeting } = session;
   const details = [participant.department, participant.position, participant.meeting_role]
     .filter((value): value is string => value !== null)
@@ -66,13 +78,16 @@ export function JoinedView({ session }: { readonly session: LanSessionView }) {
         )}
       </section>
 
-      <section className="panel">
-        <h2>Notes</h2>
-        <p className="empty">
-          Writing notes is not available yet. It arrives in a later version of
-          the app, together with the shared editor.
-        </p>
-      </section>
+      <NotePanel
+        meeting={meeting}
+        note={note}
+        loading={noteLoading}
+        changedElsewhere={noteChangedElsewhere}
+        onSave={onSaveNote}
+        onReload={onReloadNote}
+        onDismissChange={onDismissNoteChange}
+        onEditingChange={onNoteEditingChange}
+      />
     </>
   );
 }

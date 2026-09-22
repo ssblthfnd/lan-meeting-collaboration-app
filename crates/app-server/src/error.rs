@@ -141,6 +141,22 @@ impl ApiError {
         )
     }
 
+    /// The request body was larger than the route will read.
+    ///
+    /// Distinct from a validation refusal on purpose. A note over 64 KiB is
+    /// refused by the domain with a message naming the limit and the measured
+    /// size; this is the transport declining to read a body at all, which is a
+    /// different fact and a different status code (ADR-0020).
+    #[must_use]
+    pub fn payload_too_large() -> Self {
+        Self::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+            "validation",
+            "That note is too large to send. Shorten it and try again.",
+        )
+    }
+
     /// Something failed that the participant cannot act on.
     #[must_use]
     pub fn internal() -> Self {
@@ -312,6 +328,28 @@ mod tests {
             StatusCode::CONFLICT
         );
         assert_eq!(ApiError::meeting_not_open().status(), StatusCode::CONFLICT);
+        assert_eq!(
+            ApiError::payload_too_large().status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    #[test]
+    fn an_oversized_body_and_an_oversized_note_are_different_answers() {
+        // The transport declining to read a body is not the domain refusing a
+        // note. A participant who sent 300 KiB and one who sent 70 KiB have
+        // different problems, and only the second can be told the exact limit
+        // (ADR-0020).
+        let transport = ApiError::payload_too_large();
+        let domain = ApiError::from(DomainError::Validation {
+            field: "note content",
+            expected: "at most 65536 bytes of content",
+            detected: "70000 bytes".to_owned(),
+        });
+
+        assert_ne!(transport, domain);
+        assert_eq!(transport.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(domain.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

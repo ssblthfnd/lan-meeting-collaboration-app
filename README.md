@@ -10,13 +10,14 @@ a submission file back for the Host to import.
 Everything is stored in a local SQLite database on the Host device.
 **No cloud, no external API, no public hosting, no AI API.**
 
-> **Status: the Host can take notes.** A Host can create a meeting, configure
-> it, build a roster of up to 99 participants, open it, start the LAN server and
-> show a join link and QR code. Participants claim an identity from a browser on
-> the same network, and both sides update themselves. The Host can now write and
-> edit any participant's note in a shared Markdown editor and read its full
-> version history. Participant note editing, remote participation and export are
-> not implemented yet. See [Roadmap](#roadmap).
+> **Status: the meeting works end to end.** A Host can create a meeting,
+> configure it, build a roster of up to 99 participants, open it, start the LAN
+> server and show a join link and QR code. Participants claim an identity from a
+> browser on the same network and write their own note in a shared Markdown
+> editor; the Host sees every note, can edit any of them, and can read the full
+> version history. Both sides update themselves in realtime. Note links, remote
+> participation, the meeting lock and export are not implemented yet. See
+> [Roadmap](#roadmap).
 
 ## How it works
 
@@ -125,8 +126,8 @@ Phase 1 is built in order, each step independently demonstrable:
 5. Host UI: meeting lifecycle, participants, audit view
 6. LAN server, join flow, identity claim, QR
 7. Realtime: audience-scoped WebSocket and presence
-8. Host note editing and version history *(current)*
-8B. Participant note editing and the LAN note API
+8. Host note editing and version history
+8B. Participant note editing over the LAN *(current)*
 9. Remote form generation
 10. Remote submission import pipeline
 11. Meeting lock
@@ -149,6 +150,11 @@ PDF export is Phase 2 by decision - see
   participant never receives another participant's event; the audience is
   decided in Rust, per event
   ([ADR-0018](docs/adr/0018-realtime-events-and-presence.md)).
+- A participant can read and write only their own note. The note routes accept
+  no participant or meeting identifier at all: identity comes from the
+  authenticated session, so addressing somebody else's note is inexpressible
+  rather than merely refused
+  ([ADR-0020](docs/adr/0020-participant-note-editing.md)).
 - Note content is GFM-subset Markdown and is treated as untrusted input
   everywhere it is displayed, including inside the Host application. It is
   rendered as DOM nodes by `packages/editor`, never as an HTML string, and link

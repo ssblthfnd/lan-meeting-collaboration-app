@@ -1,7 +1,7 @@
 /**
  * The only module that talks to the LAN server.
  *
- * Three calls, matching the three routes the backend offers. Components go
+ * Five calls, matching the five routes the backend offers. Components go
  * through these functions and never call `fetch` directly, for the same reason
  * the Host UI centralizes `invoke`: a URL and a method are strings, and strings
  * repeated across components are typos waiting to become runtime failures.
@@ -16,6 +16,7 @@ import type {
   LanClaimedView,
   LanError,
   LanJoinView,
+  LanNoteView,
   LanSessionView,
   ParticipantId,
 } from '@lan-meeting/contracts';
@@ -126,4 +127,37 @@ export function claimIdentity(
  */
 export function fetchSession(): Promise<LanSessionView> {
   return call<LanSessionView>('/api/session', { headers: authorized() });
+}
+
+/**
+ * The participant's own note, or `null` if they have not written one.
+ *
+ * Sends nothing but the credential. The backend derives the meeting and the
+ * participant from the session row, so there is no parameter here through
+ * which another participant's note could be requested - the question cannot be
+ * expressed (ADR-0020).
+ *
+ * Available while the meeting is locked: a locked meeting is finished, not
+ * secret, and the participant wrote this note.
+ */
+export function fetchOwnNote(): Promise<LanNoteView | null> {
+  return call<LanNoteView | null>('/api/note', { headers: authorized() });
+}
+
+/**
+ * Replace the participant's own note.
+ *
+ * The body carries `content` and nothing else. Identity is the session's, the
+ * version is the backend's, and there is no `expected_version`: the write is
+ * last-write-wins and what it replaces stays in history (ADR-0020).
+ *
+ * Whether the meeting still permits the write is re-read inside the backend's
+ * own transaction, so a stale screen cannot talk this call into a write.
+ */
+export function writeOwnNote(content: string): Promise<LanNoteView> {
+  return call<LanNoteView>('/api/note', {
+    method: 'PUT',
+    headers: authorized(),
+    body: JSON.stringify({ content }),
+  });
 }

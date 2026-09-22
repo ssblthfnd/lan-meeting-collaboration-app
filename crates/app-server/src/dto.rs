@@ -16,7 +16,7 @@
 
 use app_core::id::{MeetingId, ParticipantId};
 use app_core::meeting::MeetingStatus;
-use app_db::participant_query::{ClaimableIdentity, JoinableMeeting, OwnIdentity};
+use app_db::participant_query::{ClaimableIdentity, JoinableMeeting, OwnIdentity, OwnNote};
 use serde::{Deserialize, Serialize};
 
 /* -------------------------------------------------------------------------
@@ -32,6 +32,20 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClaimRequest {
     pub participant_id: String,
+}
+
+/// New content for the participant's own note.
+///
+/// One field. There is deliberately no `participant_id`, no `meeting_id`, no
+/// `note_id` and no `expected_version`: identity comes from the authenticated
+/// session, the note is the caller's own by construction, and step 8B carries
+/// no optimistic concurrency (ADR-0020).
+///
+/// A field that does not exist cannot be trusted by mistake, which is a
+/// stronger guarantee than a field that is read and then ignored.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WriteNoteRequest {
+    pub content: String,
 }
 
 /* -------------------------------------------------------------------------
@@ -134,6 +148,38 @@ pub struct ClaimedView {
     pub session_token: String,
     pub participant: OwnIdentityView,
     pub meeting: MeetingView,
+}
+
+/// The participant's own note.
+///
+/// Four fields, and the omissions are the design. No `note_id`: the
+/// participant addresses the note implicitly, so an id they cannot use to
+/// address anything is one more identifier in a browser - the same reason
+/// [`SessionView`] carries no session id. No `last_author_id`, no meeting or
+/// participant id, no lock state, nothing about the session.
+///
+/// `last_author_type` stays because it answers a question the participant
+/// genuinely has: whether the Host changed their note underneath them.
+#[derive(Debug, Clone, Serialize)]
+pub struct NoteView {
+    /// GFM-subset Markdown. Rendered through `packages/editor`, never as HTML.
+    pub content: String,
+    /// The newest history version. Dense from 1.
+    pub version: i64,
+    pub updated_at: String,
+    /// `HOST`, `PARTICIPANT` or `REMOTE_IMPORT`.
+    pub last_author_type: String,
+}
+
+impl From<OwnNote> for NoteView {
+    fn from(row: OwnNote) -> Self {
+        Self {
+            content: row.content,
+            version: row.version,
+            updated_at: row.updated_at.to_storage(),
+            last_author_type: row.last_author_type,
+        }
+    }
 }
 
 /// What `GET /api/session` returns.
