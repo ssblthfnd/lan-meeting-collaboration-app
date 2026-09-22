@@ -56,8 +56,19 @@ axum = { version = "0.8", default-features = false, features = [
   "json",
   "tokio",
   "query",
+  # Phase 1, step 7. The WebSocket upgrade, the frame codec and subprotocol
+  # negotiation all arrive with axum itself, so realtime adds no new crate to
+  # the dependency set ADR-0006 governs.
+  "ws",
 ] }
 tower = "0.5"
+# Splitting a WebSocket into its reading and writing halves. Already in the
+# tree through axum's `ws` feature, so naming it here adds no crate to the
+# dependency set ADR-0006 governs - only the right to use it directly.
+futures-util = { version = "0.3", default-features = false, features = [
+  "sink",
+  "std",
+] }
 tower-http = { version = "0.6", default-features = false, features = [
   "set-header",
   "limit",
@@ -86,3 +97,10 @@ qrcode = { version = "0.14", default-features = false }
 # Dev-only
 tempfile = "3"
 http-body-util = "0.1"
+# A WebSocket *client*, for the real-socket tests. axum provides the server
+# half only, and this is the client axum's own `ws` feature already pulls in -
+# so the test suite adds no crate either (ADR-0006).
+tokio-tungstenite = { version = "0.29", default-features = false, features = [
+  "connect",
+  "handshake",
+] }

@@ -16,8 +16,8 @@ use tauri::State;
 use crate::dto::{
     AuditEntryDto, JoinTokenIssuedDto, LanInterfaceDto, MeetingConfigurationInput,
     MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
-    MeetingUpdatedDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantRemovedDto,
-    ParticipantSummaryDto, ParticipantUpdatedDto, SessionChangedDto,
+    MeetingUpdatedDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
+    ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, SessionChangedDto,
 };
 use crate::error::{HostError, HostErrorKind, HostResult};
 use crate::host::HostState;
@@ -174,6 +174,24 @@ pub fn revoke_participant_session(
     participant_id: String,
 ) -> HostResult<SessionChangedDto> {
     state.revoke_participant_session(&meeting_id, &participant_id)
+}
+
+/* -------------------------------------------------------------------------
+ * Presence
+ *
+ * A read. The live half comes from the LAN server's connection registry and
+ * the durable half from SQLite; neither is a mutation, and neither is audited
+ * (ADR-0018). The Host UI seeds its roster with this and then follows the
+ * `presence.changed` domain events.
+ * ------------------------------------------------------------------------- */
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn list_participant_presence(
+    state: State<'_, HostState>,
+    lan: State<'_, LanLifecycle>,
+    meeting_id: String,
+) -> HostResult<Vec<ParticipantPresenceDto>> {
+    state.list_participant_presence(&meeting_id, |id| lan.connected(id))
 }
 
 /* -------------------------------------------------------------------------

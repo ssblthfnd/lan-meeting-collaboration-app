@@ -296,7 +296,7 @@ fn every_registered_command_is_reachable_from_the_host_ui_gateway() {
 
     assert_eq!(
         registered.len(),
-        17,
+        18,
         "every registered command must be reachable, found {registered:?}"
     );
 
@@ -394,15 +394,23 @@ fn no_command_offers_to_change_an_audit_entry() {
 }
 
 // ---------------------------------------------------------------------------
-// Scope: realtime and remote participation are later steps
+// Scope: the LAN is the only network, and remote participation is a later step
 // ---------------------------------------------------------------------------
 
 #[test]
-fn no_realtime_or_relay_code_has_crept_in() {
-    // The LAN transport arrived in step 6; WebSocket, presence and remote
-    // participation did not. These are the names that would appear first if a
-    // later step had started to leak backwards, and the "no cloud, no relay"
-    // promise had started to erode.
+fn no_relay_or_outbound_network_code_has_crept_in() {
+    // WebSocket left this list in step 7, when it became the participant
+    // notification transport. Nothing else did.
+    //
+    // What remains is the "no cloud, no relay, no tunnel, no public hosting"
+    // promise (PRD section 4). These are outbound-client, hole-punching and
+    // relay names: the absence of a remote *origin* is enforced separately, by
+    // the content security policy the server sends and the tests over it.
+    //
+    // `tokio_tungstenite` stays forbidden in shipped code even though the crate
+    // is now in the tree: it is a WebSocket *client*, this application has
+    // nothing legitimate to be a client of, and the real-socket tests are the
+    // only place it belongs.
     let root = repository_root();
     let mut files = sources(&root.join("src-tauri/src"), &["rs"]);
     files.extend(sources(&root.join("crates/app-server/src"), &["rs"]));
@@ -412,28 +420,125 @@ fn no_realtime_or_relay_code_has_crept_in() {
     for file in files {
         let contents = code_only(&read(&file));
         for forbidden in [
-            "WebSocket",
-            "websocket",
-            "tokio_tungstenite",
-            "EventSource",
-            "setInterval",
-            // No cloud, relay, tunnel or public hosting. Ever (PRD section 4).
-            // These are outbound-client and port-opening names: the absence of
-            // a remote *origin* is enforced separately, by the content security
-            // policy the server sends and the tests over it.
+            // Outbound HTTP and WebSocket clients.
             "reqwest",
             "ureq",
             "hyper::Client",
+            "tokio_tungstenite",
+            // A second, unmanaged push channel.
+            "EventSource",
+            // Polling in a UI that is now event-driven. A reconnect uses a
+            // one-shot `setTimeout`; a repeating timer is how a bundle starts
+            // hammering the Host machine.
+            "setInterval",
+            // Relays, tunnels and hole punching. The join URL is reachable on
+            // the local network or it is not reachable at all.
             "ngrok",
+            "localtunnel",
             "upnp",
             "UPnP",
+            "RTCPeerConnection",
+            "webrtc",
+            "stun:",
+            "turn:",
+            "relayServer",
+            "public_gateway",
         ] {
             assert!(
                 !contents.contains(forbidden),
-                "{} mentions `{forbidden}`: out of scope for this step",
+                "{} mentions `{forbidden}`: this application has no cloud, relay or tunnel",
                 file.display()
             );
         }
+    }
+}
+
+#[test]
+fn the_notification_socket_never_carries_a_credential_in_its_url() {
+    // The whole reason the credential travels in `Sec-WebSocket-Protocol`
+    // (ADR-0018). A token in a query string reaches access logs, `Referer`
+    // headers and browser history, and this is the guard against somebody
+    // finding that easier one day.
+    let root = repository_root();
+    let ws = code_only(&read(&root.join("crates/app-server/src/ws.rs")));
+
+    // No URL-derived extractor on this route: there is nothing in the path or
+    // the query for the handler to read, so identity cannot come from there.
+    for forbidden in ["Query", "Path<", "RawQuery", "OriginalUri"] {
+        assert!(
+            !ws.contains(forbidden),
+            "the socket route must take no identity from the URL, found `{forbidden}`"
+        );
+    }
+    assert!(
+        ws.contains("SEC_WEBSOCKET_PROTOCOL"),
+        "the credential is read from the subprotocol header"
+    );
+
+    // And the client side builds the URL without one.
+    let client = code_only(&read(&root.join("apps/lan-ui/src/api/realtime.ts")));
+    for forbidden in ["?token", "&token", "token=", "#token"] {
+        assert!(
+            !client.contains(forbidden),
+            "the participant bundle must not put a credential in the socket URL: `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn only_one_module_in_the_participant_bundle_opens_a_socket() {
+    // The same rule `fetch` and browser storage already have: one module owns
+    // the credential's use, so "where does the token go" has one answer.
+    let root = repository_root();
+    let keeper = root.join("apps/lan-ui/src/api/realtime.ts");
+
+    let mut openers = Vec::new();
+    for file in sources(&root.join("apps/lan-ui/src"), &["ts", "tsx"]) {
+        if code_only(&read(&file)).contains("new WebSocket") {
+            openers.push(file);
+        }
+    }
+
+    assert_eq!(
+        openers,
+        vec![keeper],
+        "only apps/lan-ui/src/api/realtime.ts may open a WebSocket"
+    );
+}
+
+#[test]
+fn the_host_ui_has_no_socket_of_its_own() {
+    // The Host is in the same process as the database and hears domain events
+    // over Tauri IPC. A socket to loopback would route the Host own view
+    // through the transport that exists to face untrusted input, and would
+    // stop working whenever the Host chose not to start that server
+    // (ADR-0018).
+    let root = repository_root();
+    for file in sources(&root.join("apps/host-ui/src"), &["ts", "tsx"]) {
+        let contents = code_only(&read(&file));
+        for forbidden in ["WebSocket", "ws://", "wss://"] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} mentions `{forbidden}`: the Host listens over Tauri IPC",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn presence_is_never_written_to_the_audit_log() {
+    // Architecture rules section 17: the audit log records what people did to
+    // the meeting. A socket opening is an observation, and burying the real
+    // entries under connection noise would make the log unreadable (ADR-0018).
+    let root = repository_root();
+    let audit = read(&root.join("crates/app-core/src/audit.rs"));
+
+    for forbidden in ["Presence", "Connected", "Disconnected", "SocketOpened"] {
+        assert!(
+            !audit.contains(forbidden),
+            "the audit vocabulary must not gain `{forbidden}`"
+        );
     }
 }
 

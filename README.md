@@ -10,11 +10,13 @@ a submission file back for the Host to import.
 Everything is stored in a local SQLite database on the Host device.
 **No cloud, no external API, no public hosting, no AI API.**
 
-> **Status: participants can join over the LAN.** A Host can create a meeting,
-> configure it, build a roster of up to 99 participants, open it, start the LAN
-> server and show a join link and QR code. Participants claim an identity from a
-> browser on the same network. Notes, realtime updates and export are not
-> implemented yet. See [Roadmap](#roadmap).
+> **Status: the meeting is live.** A Host can create a meeting, configure it,
+> build a roster of up to 99 participants, open it, start the LAN server and
+> show a join link and QR code. Participants claim an identity from a browser on
+> the same network, and both sides now update themselves: the Host sees who is
+> connected, and a participant is told when the meeting is locked or their
+> session is ended. Notes, remote participation and export are not implemented
+> yet. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -32,8 +34,9 @@ Everything is stored in a local SQLite database on the Host device.
                         ->  submission file  ->  Host imports
 ```
 
-- SQLite is the source of truth. WebSocket only notifies; it never carries
-  authority.
+- SQLite is the source of truth. The WebSocket only notifies: an event names
+  what changed and the client re-reads it over HTTP, so a missed event costs a
+  refetch and nothing else ([ADR-0018](docs/adr/0018-realtime-events-and-presence.md)).
 - Authorization, meeting lock and auditing are enforced in Rust, never in the UI.
 - A submission file is untrusted input, even though this app generated the form
   it came from.
@@ -56,7 +59,7 @@ apps/
   remote-form/    Offline single-file HTML form for remote participants
 packages/
   contracts/      Shared TypeScript boundary shapes (API, events, submission)
-  editor/         Shared note editor + Markdown renderer (lands in step 7)
+  editor/         Shared note editor + Markdown renderer (lands in step 8)
 crates/
   app-core/       Domain core: actors, authorization, lock, audit, versioning
   app-db/         SQLite: connections, migrations, repositories
@@ -119,8 +122,8 @@ Phase 1 is built in order, each step independently demonstrable:
 3. Domain core: actors, authorization, lock-in-transaction, versioning
 4. Meeting and participant management in the domain
 5. Host UI: meeting lifecycle, participants, audit view
-6. LAN server, join flow, identity claim, QR *(current)*
-7. Realtime: audience-scoped WebSocket
+6. LAN server, join flow, identity claim, QR
+7. Realtime: audience-scoped WebSocket and presence *(current)*
 8. Host note editing and version history
 9. Remote form generation
 10. Remote submission import pipeline
@@ -139,6 +142,11 @@ PDF export is Phase 2 by decision - see
 - LAN transport is plain HTTP; the join URL and QR code are operational secrets.
   This is a stated boundary, documented in
   [ADR-0002](docs/adr/0002-lan-identity-first-claim-wins.md).
+- The notification socket carries the session token in the WebSocket
+  subprotocol, never in a URL, and carries identifiers rather than content. A
+  participant never receives another participant's event; the audience is
+  decided in Rust, per event
+  ([ADR-0018](docs/adr/0018-realtime-events-and-presence.md)).
 - No telemetry, no analytics, no crash reporting, no CDN assets.
 
 ## License

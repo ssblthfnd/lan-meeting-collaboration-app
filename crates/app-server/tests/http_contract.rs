@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use app_core::actor::Actor;
+use app_core::event::EventSink;
 use app_core::id::ParticipantId;
 use app_core::meeting::MeetingConfiguration;
 use app_core::participant::ParticipantDetails;
@@ -18,7 +19,7 @@ use app_core::service::Domain;
 use app_core::time::{MeetingDate, MeetingTime, MeetingTimeZone};
 use app_db::Db;
 use app_server::state::LanState;
-use app_server::{hash_token, router};
+use app_server::{hash_token, router, Realtime};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use http_body_util::BodyExt;
@@ -41,7 +42,11 @@ impl Lan {
     fn new(names: &[&str]) -> Self {
         let dir = TempDir::new().expect("temp dir");
         let db = Arc::new(Db::open(dir.path().join("meeting.sqlite3")).expect("open"));
-        let domain = Arc::new(Domain::new(Arc::clone(&db)));
+        // One channel behind both the mutation boundary and the server, the
+        // way the assembled application wires it (ADR-0018).
+        let realtime = Arc::new(Realtime::new());
+        let events = Arc::clone(&realtime) as Arc<dyn EventSink>;
+        let domain = Arc::new(Domain::with_events(Arc::clone(&db), Arc::clone(&events)));
 
         let meeting_id = domain
             .create_meeting(
@@ -88,7 +93,7 @@ impl Lan {
             .expect("issue");
 
         Lan {
-            state: LanState::with_domain(Arc::clone(&db), Arc::clone(&domain)),
+            state: LanState::with_realtime(Arc::clone(&db), Arc::clone(&domain), events, realtime),
             domain,
             meeting_id,
             participants,

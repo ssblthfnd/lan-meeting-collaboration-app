@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import type {
   LanError,
+  LanEvent,
   LanJoinView,
   LanSessionView,
   ParticipantId,
 } from '@lan-meeting/contracts';
 
 import * as lanApi from './api/lanApi';
+import { connectRealtime } from './api/realtime';
 import { forgetToken, joinTokenFromUrl, rememberToken, storedToken } from './api/session';
 import { IdentityPicker } from './components/IdentityPicker';
 import { JoinedView } from './components/JoinedView';
@@ -26,6 +28,19 @@ import { Notice } from './components/Notice';
  * Nothing here holds authority. The backend resolves the session token to an
  * identity on every request; a `participant_id` sent from this bundle is a
  * target, never a claim about who is asking (architecture rules section 14.1).
+ *
+ * # Events are cues, not data
+ *
+ * Once joined, a socket delivers notifications. Every one of them is handled
+ * the same way: **refetch**. Nothing on this screen is ever built from an event
+ * payload, because the payload carries identifiers and a timestamp and the
+ * backend carries the answer (architecture rules section 16).
+ *
+ * That is also why a missed event is harmless. `meeting.locked` makes this
+ * screen re-read the meeting and say so; a participant who never receives it
+ * is refused by the backend in exactly the same way, because the lock is
+ * re-read inside every mutating transaction (section 15). The socket makes the
+ * screen honest, and never makes it authoritative.
  *
  * Note writing is not part of this step - it needs the shared editor and the
  * Markdown subset (ADR-0007), which arrive with their own roadmap step. A
@@ -88,6 +103,67 @@ export function App() {
       cancelled = true;
     };
   }, [joinToken, loadJoin]);
+
+  // Once joined, follow the socket. Every event is a cue to re-read the
+  // session, which is the one place this screen's state comes from.
+  const joined = screen.kind === 'joined';
+
+  useEffect(() => {
+    if (!joined) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function reread() {
+      try {
+        const session = await lanApi.fetchSession();
+        if (!cancelled) {
+          setScreen({ kind: 'joined', session });
+        }
+      } catch (rejection) {
+        // The credential stopped working between the event and the refetch -
+        // revoked, or a meeting that has moved on. Drop it and start again.
+        if (!cancelled) {
+          forgetToken();
+          setScreen({ kind: 'failed', error: rejection as LanError });
+        }
+      }
+    }
+
+    const disconnect = connectRealtime({
+      onEvent: (event: LanEvent) => {
+        // `session.revoked` arrives just before the socket closes; the close
+        // handler below is what acts on it, so there is one path for "this
+        // credential is gone" rather than two that could disagree.
+        if (event.type === 'session.revoked') {
+          return;
+        }
+        void reread();
+      },
+      onRevoked: () => {
+        if (cancelled) {
+          return;
+        }
+        forgetToken();
+        setScreen({
+          kind: 'failed',
+          error: {
+            kind: 'unauthenticated',
+            category: 'authorization',
+            message:
+              'The host ended your session for this meeting. Open the join '
+              + 'link again to pick your name.',
+          },
+        });
+      },
+    });
+
+    return () => {
+      cancelled = true;
+      disconnect();
+    };
+  }, [joined]);
 
   async function claim(participantId: ParticipantId) {
     if (joinToken === null) {

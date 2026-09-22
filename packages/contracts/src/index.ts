@@ -6,7 +6,7 @@
  *
  * - `host.ts`           - Host UI <-> Tauri command DTOs        (Phase 1, step 4)
  * - `lan.ts`            - LAN participant <-> HTTP DTOs         (Phase 1, step 6)
- * - `ws-events.ts`      - audience-scoped WebSocket events      (realtime)
+ * - `ws-events.ts`      - audience-scoped domain events         (Phase 1, step 7)
  * - `form-payload.ts`   - immutable metadata baked into a remote form
  * - `submission.v1.ts`  - remote submission schema, versioned
  *
@@ -25,6 +25,12 @@
 
 export type * from './host';
 export type * from './lan';
+export type * from './ws-events';
+
+// Values rather than types: a subprotocol tag, two close codes and an event
+// name are strings both bundles must spell identically, and a string repeated
+// across two workspaces is a typo waiting to become a runtime failure.
+export { HOST_DOMAIN_EVENT, LAN_SOCKET_CLOSE, LAN_SOCKET_SUBPROTOCOL } from './ws-events';
 
 /** Maximum participants per meeting (PRD section 7). */
 export const MAX_PARTICIPANTS = 99;

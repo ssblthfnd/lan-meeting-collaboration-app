@@ -198,6 +198,27 @@ export interface ParticipantSummary {
 }
 
 /**
+ * One participant's presence, as the Host's roster shows it.
+ *
+ * Two values from two places, deliberately. `connected` is the LAN server's
+ * in-memory count of open sockets and is `false` for everybody while that
+ * server is stopped - which is the truth, not a fallback. `last_seen_at` is the
+ * durable half, and it means **the last moment a socket for the live session
+ * was observed to open or close**: it is not a heartbeat, so a participant who
+ * has been connected and quiet for an hour still shows the moment they
+ * connected, and a connection that dropped without a close frame is noticed
+ * only when the server's keepalive notices it.
+ *
+ * Presence is an observation and grants no authority. Nothing in the backend
+ * consults it to decide what anybody may do.
+ */
+export interface ParticipantPresence {
+  readonly participant_id: ParticipantId;
+  readonly connected: boolean;
+  readonly last_seen_at: Iso8601Utc | null;
+}
+
+/**
  * What the Host submits for a participant (PRD section 7).
  *
  * `name` is required. It is deliberately not unique within a meeting: identity

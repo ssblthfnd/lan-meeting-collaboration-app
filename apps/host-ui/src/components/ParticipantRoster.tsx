@@ -1,16 +1,20 @@
 import { useState } from 'react';
 import { MAX_PARTICIPANTS } from '@lan-meeting/contracts';
 import type {
+  DomainEventKind,
   HostError,
+  Iso8601Utc,
   MeetingDetail,
   MeetingId,
   ParticipantClaimStatus,
   ParticipantDetailsInput,
   ParticipantId,
+  ParticipantPresence,
   ParticipantSummary,
 } from '@lan-meeting/contracts';
 
 import * as hostApi from '../api/hostApi';
+import { useDomainEvents } from '../hooks/useDomainEvents';
 import { useQuery } from '../hooks/useQuery';
 import { ErrorNotice } from './ErrorNotice';
 
@@ -26,7 +30,31 @@ import { ErrorNotice } from './ErrorNotice';
  * The count is shown against the maximum of 99. The limit is the backend's, held
  * to inside a transaction; showing it here only saves the Host from finding out
  * by being refused.
+ *
+ * # Presence, and what it is not
+ *
+ * The roster follows domain events and re-reads itself when one arrives, so a
+ * participant opening or closing their browser shows up here without the Host
+ * reloading anything. Two things this deliberately is not:
+ *
+ * - **Not authority.** Presence is an observation. Nothing the Host or a
+ *   participant is allowed to do depends on it, and no control below is enabled
+ *   or disabled by it.
+ * - **Not a substitute for the claim status.** A name can be claimed and not
+ *   connected - someone joined and closed the tab - and that is a different
+ *   fact from having released the name. Both are shown.
  */
+
+/** The events that change what this roster shows. */
+const WATCHED: readonly DomainEventKind[] = [
+  'participant.added',
+  'participant.updated',
+  'participant.removed',
+  'participant.claimed',
+  'claim.approved',
+  'session.revoked',
+  'presence.changed',
+];
 
 const EMPTY: ParticipantDetailsInput = {
   name: '',
@@ -106,6 +134,40 @@ function ParticipantFields({
   );
 }
 
+/**
+ * Whether a participant has a browser open on this meeting right now.
+ *
+ * Silent when nobody is connected and nothing was ever recorded, so a roster
+ * the Host has only just typed in does not sprout a column of "offline" labels
+ * about people who have not been invited yet.
+ *
+ * `last_seen_at` is shown as the raw UTC timestamp, like every other system
+ * timestamp in this window. It means the last moment a socket was observed to
+ * open or close - not a heartbeat - so a connection that dropped silently is
+ * noticed only when the server's keepalive notices it (ADR-0018).
+ */
+function PresenceBadge({
+  presence,
+}: {
+  readonly presence: ParticipantPresence | undefined;
+}) {
+  if (presence === undefined) {
+    return null;
+  }
+  if (presence.connected) {
+    return <span className="badge badge-presence-connected">Connected</span>;
+  }
+  const lastSeen: Iso8601Utc | null = presence.last_seen_at;
+  if (lastSeen === null) {
+    return null;
+  }
+  return (
+    <span className="badge badge-presence-away" title={`Last seen ${lastSeen}`}>
+      Not connected
+    </span>
+  );
+}
+
 export function ParticipantRoster({
   meeting,
   onRosterChanged,
@@ -118,6 +180,10 @@ export function ParticipantRoster({
   const editable = meeting.status === 'DRAFT';
 
   const roster = useQuery(() => hostApi.listParticipants(meetingId), [meetingId]);
+  const presence = useQuery(
+    () => hostApi.listParticipantPresence(meetingId),
+    [meetingId],
+  );
   const [draft, setDraft] = useState<ParticipantDetailsInput>(EMPTY);
   const [editing, setEditing] = useState<ParticipantId | null>(null);
   const [editValues, setEditValues] = useState<ParticipantDetailsInput>(EMPTY);
@@ -126,6 +192,17 @@ export function ParticipantRoster({
 
   const participants = roster.data ?? [];
   const full = participants.length >= MAX_PARTICIPANTS;
+
+  const presenceById = new Map<ParticipantId, ParticipantPresence>(
+    (presence.data ?? []).map((row) => [row.participant_id, row]),
+  );
+
+  // An event says something changed; these two commands say what it is. The
+  // payload is never rendered (ADR-0018).
+  useDomainEvents(meetingId, WATCHED, () => {
+    roster.reload();
+    presence.reload();
+  });
 
   /**
    * Run a mutation, then re-read from the backend.
@@ -221,7 +298,8 @@ export function ParticipantRoster({
                       className={`badge badge-claim-${participant.claim_status.toLowerCase()}`}
                     >
                       {CLAIM_LABEL[participant.claim_status]}
-                    </span>
+                    </span>{' '}
+                    <PresenceBadge presence={presenceById.get(participant.id)} />
                     <span className="card-meta">
                       {[
                         participant.department,

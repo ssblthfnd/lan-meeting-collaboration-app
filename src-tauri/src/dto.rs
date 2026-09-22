@@ -393,6 +393,23 @@ impl From<SessionChanged> for SessionChangedDto {
     }
 }
 
+/// One participant's presence, as the Host's roster shows it.
+///
+/// Two values from two places on purpose. `connected` is the LAN server's
+/// in-memory count of open sockets, and is `false` for everybody while the
+/// server is stopped - which is the truth, since there is nothing to be
+/// connected to. `last_seen_at` is the durable half, and it means **the last
+/// moment a socket for the live session was observed to open or close**: it is
+/// not a heartbeat, so a participant who has been connected and quiet for an
+/// hour still shows the moment they connected, and a socket that died without
+/// a close frame is noticed only when the keepalive does (ADR-0018).
+#[derive(Debug, Clone, Serialize)]
+pub struct ParticipantPresenceDto {
+    pub participant_id: ParticipantId,
+    pub connected: bool,
+    pub last_seen_at: Option<UtcTimestamp>,
+}
+
 /// One address the Host could advertise in the join URL.
 #[derive(Debug, Clone, Serialize)]
 pub struct LanInterfaceDto {

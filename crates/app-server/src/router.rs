@@ -13,6 +13,11 @@
 //! policy is where that stops being a promise and becomes a rule the browser
 //! enforces (PRD section 4, section 24).
 //!
+//! `connect-src 'self'` covers the notification socket as well. Under CSP
+//! Level 3 `'self'` matches a `ws://` URL whose host and port are the page's
+//! own, which is the only socket this bundle opens. Adding `ws:` would widen
+//! the policy to every host on the network for no gain.
+//!
 //! # Body limits
 //!
 //! The only body any route accepts is a single identifier. A kilobyte is
@@ -28,6 +33,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use crate::assets;
 use crate::routes;
 use crate::state::LanState;
+use crate::ws;
 
 /// The content security policy served with every LAN response.
 ///
@@ -58,7 +64,10 @@ pub fn router(state: LanState) -> Router {
     let api = Router::new()
         .route("/api/join/{token}", get(routes::join))
         .route("/api/join/{token}/claim", post(routes::claim))
-        .route("/api/session", get(routes::session));
+        .route("/api/session", get(routes::session))
+        // Server-to-client notification only. The credential travels in the
+        // subprotocol, never in this path (ADR-0018).
+        .route("/ws", get(ws::connect));
 
     Router::new()
         .merge(api)

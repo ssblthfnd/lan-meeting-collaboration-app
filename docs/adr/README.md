@@ -23,6 +23,7 @@ history.
 | [0015](0015-host-error-contract.md) | The Host error contract | Accepted |
 | [0016](0016-lan-session-and-claim-model.md) | The LAN session and claim model | Accepted |
 | [0017](0017-local-qr-generation.md) | Local QR generation | Accepted |
+| [0018](0018-realtime-events-and-presence.md) | Realtime events, audiences and presence | Accepted |
 
 Template:
 

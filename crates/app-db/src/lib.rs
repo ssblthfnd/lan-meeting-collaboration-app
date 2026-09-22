@@ -52,9 +52,15 @@
 //! [`session_store`] is neither: it answers "who is asking" by resolving a
 //! credential hash, and its output becomes an `Actor`.
 //!
-//! Status: Phase 1, step 6. Schema, migrations, pool, transaction helpers, the
-//! domain-port adapter, the Host read queries, the participant read queries and
-//! credential resolution all exist.
+//! [`presence`] is the other exception. It records that a participant's socket
+//! opened or closed, which is an observation rather than an action somebody
+//! took: it is not authorized, not audited, and not subject to the meeting
+//! lock. Its module documentation says exactly what `last_seen_at` promises and
+//! what it does not (ADR-0018).
+//!
+//! Status: Phase 1, step 7. Schema, migrations, pool, transaction helpers, the
+//! domain-port adapter, the Host read queries, the participant read queries,
+//! credential resolution and the presence store all exist.
 
 #![forbid(unsafe_code)]
 
@@ -62,6 +68,7 @@ pub mod error;
 pub mod migrations;
 pub mod participant_query;
 pub mod pool;
+pub mod presence;
 pub mod query;
 pub mod repository;
 pub mod session_store;
@@ -70,6 +77,7 @@ pub mod sql;
 pub use error::{DbError, DbResult};
 pub use participant_query::{ClaimableIdentity, JoinableMeeting, OwnIdentity, ParticipantQueries};
 pub use pool::Db;
+pub use presence::{ParticipantPresence, PresenceStore};
 pub use query::{AuditEntryView, HostQueries, MeetingDetail, MeetingSummary, ParticipantSummary};
 pub use repository::DbTx;
 pub use session_store::{JoinTarget, SessionStore};

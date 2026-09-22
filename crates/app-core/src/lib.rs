@@ -16,16 +16,19 @@
 //! - the participant roster ([`participant`])
 //! - participant sessions and the claim model ([`session`], [`token`])
 //! - note versioning and audit policy ([`service`], [`audit`])
+//! - domain events and the audience model ([`event`])
 //! - the persistence port ([`port`]) that `app-db` implements
 //!
 //! Explicitly **not** responsible for: HTTP, WebSocket, SQL, file I/O, UI. It
 //! has no SQLite and no transport dependency; persistence arrives through
-//! [`port::Database`].
+//! [`port::Database`], and notification through [`event::EventSink`], which is
+//! a trait with no channel, no socket and no runtime behind it here.
 //!
-//! Status: Phase 1, step 6. Identifiers, time, the lifecycle, authorization,
+//! Status: Phase 1, step 7. Identifiers, time, the lifecycle, authorization,
 //! note versioning, audit policy and the mutation boundary are implemented, and
-//! so are meeting creation/configuration, the participant roster, and the
-//! join-token and identity-claim rules.
+//! so are meeting creation/configuration, the participant roster, the
+//! join-token and identity-claim rules, and the domain event model with its
+//! audience derivation.
 //!
 //! Resolving a presented credential is still the transport's job: this crate
 //! holds only [`token::TokenHash`], never a token, and has no way to generate or
@@ -37,6 +40,7 @@ pub mod actor;
 pub mod audit;
 pub mod authz;
 pub mod error;
+pub mod event;
 pub mod id;
 pub mod meeting;
 pub mod participant;
@@ -51,6 +55,7 @@ pub use actor::Actor;
 pub use audit::{AuditAction, AuditEntry, AuditTarget};
 pub use authz::{authorize, Authorized, Operation};
 pub use error::{DomainError, DomainResult};
+pub use event::{Audience, CompositeSink, DomainEvent, EventSink, NoEvents};
 pub use id::{
     AuditLogId, Entity, Id, IdError, MeetingId, NoteId, NoteLinkId, NoteVersionId, ParticipantId,
     RemoteSubmissionId, SessionId, SubmissionId,

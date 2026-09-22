@@ -38,22 +38,32 @@
 //! notes need the shared editor and the Markdown subset (ADR-0007). Listing the
 //! omissions is the point - adding either command should be a deliberate act
 //! rather than a gap someone fills in passing.
+//!
+//! # Events are not published here either
+//!
+//! A mutation announces itself from inside `Domain`, after the transaction
+//! commits (architecture rules section 16). This layer supplies the sink at
+//! construction and then has nothing to do with it - which is what stops a
+//! command from being the one place an event is forgotten, or emitted twice, or
+//! emitted for something that rolled back.
 
 use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 
 use app_core::actor::Actor;
-use app_core::id::MeetingId;
+use app_core::event::{EventSink, NoEvents};
+use app_core::id::{MeetingId, ParticipantId};
 use app_core::service::Domain;
+use app_db::presence::PresenceStore;
 use app_db::query::HostQueries;
 use app_db::Db;
 
 use crate::dto::{
     AuditEntryDto, JoinTokenIssuedDto, LanInterfaceDto, MeetingConfigurationInput,
     MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
-    MeetingUpdatedDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantRemovedDto,
-    ParticipantSummaryDto, ParticipantUpdatedDto, SessionChangedDto,
+    MeetingUpdatedDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
+    ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, SessionChangedDto,
 };
 use crate::error::{HostError, HostErrorKind, HostResult};
 
@@ -72,11 +82,20 @@ pub struct HostState {
 }
 
 impl HostState {
-    /// Wrap an open database.
+    /// Wrap an open database, publishing nothing.
+    ///
+    /// For tests about what a command writes. The running application uses
+    /// [`HostState::with_events`], so a mutation reaches the window and the LAN.
     #[must_use]
     pub fn new(db: Arc<Db>) -> Self {
+        Self::with_events(db, Arc::new(NoEvents))
+    }
+
+    /// Wrap an open database and publish every committed mutation.
+    #[must_use]
+    pub fn with_events(db: Arc<Db>, events: Arc<dyn EventSink>) -> Self {
         Self {
-            domain: Arc::new(Domain::new(Arc::clone(&db))),
+            domain: Arc::new(Domain::with_events(Arc::clone(&db), events)),
             db,
         }
     }
@@ -84,6 +103,14 @@ impl HostState {
     /// Open (creating and migrating if needed) the database at `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, app_db::DbError> {
         Ok(Self::new(Arc::new(Db::open(path)?)))
+    }
+
+    /// Open the database at `path` and publish every committed mutation.
+    pub fn open_with_events(
+        path: impl AsRef<Path>,
+        events: Arc<dyn EventSink>,
+    ) -> Result<Self, app_db::DbError> {
+        Ok(Self::with_events(Arc::new(Db::open(path)?), events))
     }
 
     /// The mutation boundary. The only way anything here changes state.
@@ -328,6 +355,37 @@ impl HostState {
             .domain
             .revoke_session(&Actor::Host, meeting_id, participant_id)?;
         Ok(outcome.into())
+    }
+
+    /// Who is connected, and when each identity was last seen.
+    ///
+    /// Two halves from two places, and the split is the point. `last_seen_at`
+    /// comes from SQLite; `connected` comes from `connected`, which reads the
+    /// LAN server's in-memory registry. Persisting the second would mean a Host
+    /// machine that lost power left a database claiming everybody was still
+    /// here (ADR-0018).
+    ///
+    /// When the LAN server is not running, nobody is connected - which is true,
+    /// not a fallback: there is no socket to be connected to.
+    pub fn list_participant_presence(
+        &self,
+        meeting_id: &str,
+        connected: impl FnOnce(MeetingId) -> Vec<ParticipantId>,
+    ) -> HostResult<Vec<ParticipantPresenceDto>> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let rows = PresenceStore::new(&self.db)
+            .roster_presence(meeting_id)
+            .map_err(query_failed)?;
+        let live = connected(meeting_id);
+
+        Ok(rows
+            .into_iter()
+            .map(|row| ParticipantPresenceDto {
+                connected: live.contains(&row.participant_id),
+                participant_id: row.participant_id,
+                last_seen_at: row.last_seen_at,
+            })
+            .collect())
     }
 
     /* ------------------------------------------------------------------

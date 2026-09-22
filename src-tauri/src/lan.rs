@@ -24,12 +24,29 @@
 //! [`LanLifecycle::stop`] waits for the socket to close before reporting. A
 //! "stopped" indicator that did not mean the port was free would make the next
 //! start fail for a reason the Host could not see.
+//!
+//! That guarantee is why notification sockets are told to close first. A
+//! graceful shutdown waits for every upgraded connection to finish, and a
+//! socket whose whole job is to wait for events has no reason of its own to
+//! finish - so `app_server` signals them before it stops accepting, and this
+//! call returns only once they have gone.
+//!
+//! # The realtime channel outlives the server
+//!
+//! [`Realtime`] is owned here rather than by the server, because the Host may
+//! prepare a meeting with the server stopped and their own window must still
+//! update as they work. Published events simply have no LAN subscribers then,
+//! which is not a failure (ADR-0018). The connection registry empties by
+//! itself as the sockets close, so a restart begins with nobody connected -
+//! which is true, rather than a value left over from last time.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use app_core::event::EventSink;
+use app_core::id::{MeetingId, ParticipantId};
 use app_core::service::Domain;
 use app_db::Db;
-use app_server::{RunningServer, ServerError, DEFAULT_PORT};
+use app_server::{LanState, Realtime, RunningServer, ServerError, DEFAULT_PORT};
 use serde::Serialize;
 
 /// What the Host UI shows about the server.
@@ -79,21 +96,42 @@ enum Lifecycle {
 pub struct LanLifecycle {
     db: Arc<Db>,
     domain: Arc<Domain<Arc<Db>>>,
+    events: Arc<dyn EventSink>,
+    realtime: Arc<Realtime>,
     state: Mutex<Lifecycle>,
 }
 
 impl LanLifecycle {
-    /// Share the Host's database and its existing mutation boundary.
+    /// Share the Host's database, mutation boundary, event sink and channel.
     ///
     /// One `Domain` for both transports, as ADR-0012 requires: a second one
-    /// would be a second place for a rule to be enforced differently.
+    /// would be a second place for a rule to be enforced differently. One sink
+    /// for both audiences, by the same argument: two would be two places for an
+    /// audience decision to drift.
     #[must_use]
-    pub fn new(db: Arc<Db>, domain: Arc<Domain<Arc<Db>>>) -> Self {
+    pub fn new(
+        db: Arc<Db>,
+        domain: Arc<Domain<Arc<Db>>>,
+        events: Arc<dyn EventSink>,
+        realtime: Arc<Realtime>,
+    ) -> Self {
         Self {
             db,
             domain,
+            events,
+            realtime,
             state: Mutex::new(Lifecycle::Stopped),
         }
+    }
+
+    /// Everyone with a socket open on this meeting, right now.
+    ///
+    /// Empty while the server is stopped, because there is then nothing to be
+    /// connected to. Sorted, so a roster rendered from it has a total order
+    /// (architecture rules section 26.4).
+    #[must_use]
+    pub fn connected(&self, meeting_id: MeetingId) -> Vec<ParticipantId> {
+        self.realtime.connected(meeting_id)
     }
 
     /// The lifecycle, recovering a poisoned lock rather than discarding it.
@@ -144,12 +182,13 @@ impl LanLifecycle {
             }
         }
 
-        let outcome = app_server::start(
+        let state = LanState::with_realtime(
             Arc::clone(&self.db),
             Arc::clone(&self.domain),
-            port.unwrap_or(DEFAULT_PORT),
-        )
-        .await;
+            Arc::clone(&self.events),
+            Arc::clone(&self.realtime),
+        );
+        let outcome = app_server::start(state, port.unwrap_or(DEFAULT_PORT)).await;
 
         let server = match outcome {
             Ok(server) => server,

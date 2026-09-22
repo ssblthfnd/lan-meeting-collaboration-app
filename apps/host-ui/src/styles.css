@@ -399,6 +399,19 @@ code {
   color: var(--accent-fg);
 }
 
+/* Presence is an observation, not a permission, so it is styled as a quiet
+   annotation rather than as a state the Host has to act on. */
+.badge-presence-connected {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+
+.badge-presence-away {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
 /* ---- LAN access ---- */
 
 .join {

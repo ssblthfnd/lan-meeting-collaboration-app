@@ -4,7 +4,9 @@
 //! rules. Its jobs are:
 //! - own the application state (the database handle and the mutation boundary)
 //! - expose Tauri commands to the Host UI, minting `app_core::Actor::Host`
-//! - start/stop the LAN server as the meeting lifecycle requires (not yet)
+//! - start and stop the LAN server when the Host asks
+//! - assemble the event sink that reaches both audiences, and emit the Host's
+//!   half of it into the window over IPC
 //!
 //! Every mutation is delegated to `app-core`, and it could not be otherwise:
 //! the port's write methods require an authorization proof only that crate can
@@ -16,6 +18,7 @@
 //! | --- | --- |
 //! | [`dto`] | the IPC shapes, and the parsing that establishes types |
 //! | [`error`] | `DomainError` -> the structured Host error (ADR-0015) |
+//! | [`events`] | domain events -> the Host window, over Tauri IPC |
 //! | [`host`] | application state and the implementation of each command |
 //! | [`lan`] | the LAN server's start/stop lifecycle |
 //! | [`qr`] | QR matrices for the join URL, generated locally |
@@ -33,28 +36,49 @@
 //! Both transports share **one** `Domain` over one database, so a rule cannot
 //! be enforced differently depending on who is asking (ADR-0012).
 //!
+//! # Realtime, and why the Host has no socket
+//!
+//! One `EventSink` is built here and handed to the `Domain`. It is a composite:
+//!
+//! ```text
+//! Domain
+//!  └── CompositeSink
+//!       ├── Realtime      -> participant WebSockets, when the server runs
+//!       └── TauriEventSink -> this window, always
+//! ```
+//!
+//! The Host is in the same process as the database and hears events over IPC.
+//! Giving it a WebSocket to `127.0.0.1` would put the Host's own view on the
+//! transport that faces untrusted input, and would stop working the moment the
+//! Host chose not to start that server (ADR-0018).
+//!
 //! # Not here
 //!
-//! No WebSocket - realtime is its own roadmap step. No remote form or import,
-//! no notes, no export.
+//! No remote form or import, no note editing, no export.
 //!
-//! Status: Phase 1, step 6. Meeting and participant management, the read-only
-//! audit view, and the LAN server with the join and identity-claim flow.
+//! Status: Phase 1, step 7. Meeting and participant management, the read-only
+//! audit view, the LAN server with the join and identity-claim flow, and
+//! realtime notification with presence.
 
 #![forbid(unsafe_code)]
 
 pub mod commands;
 pub mod dto;
 pub mod error;
+pub mod events;
 pub mod host;
 pub mod lan;
 pub mod qr;
 
 pub use error::{ErrorCategory, HostError, HostErrorKind, HostResult};
+pub use events::{TauriEventSink, DOMAIN_EVENT};
 pub use host::{HostState, DATABASE_FILE};
 pub use lan::{LanLifecycle, LanServerStatus};
 pub use qr::QrMatrix;
 
+use std::sync::Arc;
+
+use app_core::event::{CompositeSink, EventSink};
 use tauri::Manager;
 
 /// Build and run the Host application.
@@ -70,12 +94,29 @@ pub fn run() {
         .setup(|app| {
             let directory = app.path().app_data_dir()?;
             std::fs::create_dir_all(&directory)?;
-            let state = HostState::open(directory.join(DATABASE_FILE))?;
 
-            // The LAN server shares this database and this mutation boundary.
-            // It is not started here: binding a LAN-reachable socket is the
-            // Host's decision, not a side effect of launching (ADR-0016).
-            app.manage(LanLifecycle::new(state.shared_db(), state.shared_domain()));
+            // Built before the database, because the mutation boundary is
+            // constructed with it: a `Domain` publishes to the sink it was
+            // given, and there is no way to attach one afterwards.
+            let realtime = Arc::new(app_server::Realtime::new());
+            let events: Arc<dyn EventSink> = Arc::new(CompositeSink::new(vec![
+                Arc::clone(&realtime) as Arc<dyn EventSink>,
+                Arc::new(TauriEventSink::new(app.handle().clone())),
+            ]));
+
+            let state =
+                HostState::open_with_events(directory.join(DATABASE_FILE), Arc::clone(&events))?;
+
+            // The LAN server shares this database, this mutation boundary and
+            // this channel. It is not started here: binding a LAN-reachable
+            // socket is the Host's decision, not a side effect of launching
+            // (ADR-0016).
+            app.manage(LanLifecycle::new(
+                state.shared_db(),
+                state.shared_domain(),
+                events,
+                realtime,
+            ));
             app.manage(state);
             Ok(())
         })
@@ -90,6 +131,7 @@ pub fn run() {
             commands::remove_participant,
             commands::list_participants,
             commands::list_audit_entries,
+            commands::list_participant_presence,
             commands::start_lan_server,
             commands::stop_lan_server,
             commands::lan_server_status,

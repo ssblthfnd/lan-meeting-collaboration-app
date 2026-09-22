@@ -19,6 +19,15 @@ import { MeetingHeader } from './MeetingHeader';
  * be able to do everything any other participant can: approval is
  * acknowledgement, not a permission gate (ADR-0016). Nothing on this screen is
  * disabled because of it, and nothing ever should be.
+ *
+ * # On the lock
+ *
+ * A locked meeting is announced here because the participant should know why
+ * things stop working, and for no other reason. This banner is **not** the
+ * enforcement: the backend re-reads the meeting's status inside every mutating
+ * transaction, so a participant who never received the event, closed this tab,
+ * or edited the bundle is refused just the same (architecture rules section
+ * 15). The socket keeps the screen honest; it does not keep the meeting safe.
  */
 export function JoinedView({ session }: { readonly session: LanSessionView }) {
   const { participant, meeting } = session;
@@ -29,6 +38,15 @@ export function JoinedView({ session }: { readonly session: LanSessionView }) {
   return (
     <>
       <MeetingHeader meeting={meeting} />
+
+      {meeting.status === 'LOCKED' && (
+        <div className="notice notice-lifecycle" role="status">
+          <p>The host has locked this meeting. Nothing can be changed now.</p>
+          <p className="meta">
+            You can stay on this page; there is just nothing left to do here.
+          </p>
+        </div>
+      )}
 
       <section className="panel">
         <h2>You have joined</h2>

@@ -10,6 +10,8 @@
 use std::sync::Arc;
 
 use app_core::actor::Actor;
+use app_core::event::EventSink;
+use app_server::Realtime;
 use lan_meeting_app_lib::dto::{MeetingConfigurationInput, ParticipantDetailsInput};
 use lan_meeting_app_lib::error::ErrorCategory;
 use lan_meeting_app_lib::{HostState, LanLifecycle};
@@ -18,17 +20,31 @@ use tempfile::TempDir;
 struct Host {
     state: HostState,
     lan: LanLifecycle,
+    realtime: Arc<Realtime>,
     _dir: TempDir,
 }
 
 impl Host {
     fn new() -> Self {
         let dir = TempDir::new().expect("temp dir");
-        let state = HostState::open(dir.path().join("meetings.sqlite3")).expect("open");
-        let lan = LanLifecycle::new(state.shared_db(), state.shared_domain());
+
+        // Assembled the way `run` assembles it: one channel behind the
+        // mutation boundary and the LAN server both (ADR-0018).
+        let realtime = Arc::new(Realtime::new());
+        let events = Arc::clone(&realtime) as Arc<dyn EventSink>;
+        let state =
+            HostState::open_with_events(dir.path().join("meetings.sqlite3"), Arc::clone(&events))
+                .expect("open");
+        let lan = LanLifecycle::new(
+            state.shared_db(),
+            state.shared_domain(),
+            events,
+            Arc::clone(&realtime),
+        );
         Host {
             state,
             lan,
+            realtime,
             _dir: dir,
         }
     }
@@ -569,6 +585,83 @@ fn both_transports_mutate_through_the_same_domain() {
     assert_eq!(
         host.state.list_participants(&meeting_id).unwrap()[0].claim_status,
         "PENDING"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Presence, as the Host's roster reads it
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nobody_is_connected_while_the_server_is_stopped() {
+    // Not a fallback value: there is no socket to be connected to. This is the
+    // reason connectivity is not a column - a Host machine that lost power
+    // would otherwise leave a database claiming everybody was still here
+    // (ADR-0018).
+    let host = Host::new();
+    let meeting_id = host.open_meeting();
+
+    let presence = host
+        .state
+        .list_participant_presence(&meeting_id, |id| host.lan.connected(id))
+        .expect("read presence");
+
+    assert_eq!(
+        presence.len(),
+        1,
+        "every roster row appears, claimed or not"
+    );
+    assert!(!presence[0].connected);
+    assert_eq!(presence[0].last_seen_at, None);
+}
+
+#[test]
+fn the_roster_merges_the_live_registry_with_the_stored_timestamp() {
+    let host = Host::new();
+    let meeting_id = host.open_meeting();
+    let participant_id = host.state.list_participants(&meeting_id).unwrap()[0].id;
+    let parsed = app_core::id::MeetingId::parse(&meeting_id).unwrap();
+
+    // A socket, as the LAN transport would record one.
+    host.realtime.attach(parsed, participant_id);
+
+    let presence = host
+        .state
+        .list_participant_presence(&meeting_id, |id| host.lan.connected(id))
+        .expect("read presence");
+    assert!(
+        presence[0].connected,
+        "the live half comes from the registry"
+    );
+    // And still nothing durable: a socket that has never been recorded leaves
+    // `last_seen_at` alone.
+    assert_eq!(presence[0].last_seen_at, None);
+
+    host.realtime.detach(parsed, participant_id);
+    let presence = host
+        .state
+        .list_participant_presence(&meeting_id, |id| host.lan.connected(id))
+        .expect("read presence");
+    assert!(!presence[0].connected);
+}
+
+#[test]
+fn presence_is_scoped_to_the_meeting_that_was_asked_about() {
+    let host = Host::new();
+    let here = host.open_meeting();
+    let elsewhere = host.open_meeting();
+    let theirs = host.state.list_participants(&elsewhere).unwrap()[0].id;
+
+    host.realtime
+        .attach(app_core::id::MeetingId::parse(&elsewhere).unwrap(), theirs);
+
+    let presence = host
+        .state
+        .list_participant_presence(&here, |id| host.lan.connected(id))
+        .expect("read presence");
+    assert!(
+        presence.iter().all(|row| !row.connected),
+        "another meeting's socket must not appear here"
     );
 }
 

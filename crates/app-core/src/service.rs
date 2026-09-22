@@ -20,7 +20,7 @@
 //!             -> append note history
 //!             -> append the audit record
 //!           COMMIT
-//!   -> transport may broadcast, after the commit
+//!   -> EventSink::publish, after the commit
 //! ```
 //!
 //! [`Domain::create_meeting`] is the one operation with no state to load, since
@@ -33,8 +33,14 @@
 //! check a race, not an enforcement, and this is the one place where that is
 //! avoided for all transports at once.
 //!
-//! Broadcasting is deliberately outside: WebSocket events are emitted after the
-//! transaction commits, never before (architecture rules section 16).
+//! Publication is deliberately outside the transaction. Every method below
+//! calls [`Domain::publish`] only on the path where `transaction` returned
+//! `Ok`, so an event announces a committed fact and nothing else - a rolled
+//! back or refused mutation emits nothing (architecture rules section 16).
+//!
+//! The dependency runs one way only. [`crate::event::EventSink::publish`]
+//! cannot fail, so no WebSocket, no window and no channel can affect a write
+//! that SQLite has already accepted.
 
 use serde_json::{json, Value};
 
@@ -42,6 +48,7 @@ use crate::actor::Actor;
 use crate::audit::{AuditAction, AuditEntry, AuditTarget};
 use crate::authz::{authorize, Authorized, Operation};
 use crate::error::{DomainError, DomainResult};
+use crate::event::{DomainEvent, EventSink, NoEvents};
 use crate::id::{MeetingId, NoteId, NoteVersionId, ParticipantId, SessionId};
 use crate::meeting::{MeetingConfiguration, MeetingStatus};
 use crate::participant::{ensure_room_for_one_more, ParticipantDetails};
@@ -51,6 +58,7 @@ use crate::port::{
 use crate::session::SessionBinding;
 use crate::time::UtcTimestamp;
 use crate::token::TokenHash;
+use std::sync::Arc;
 
 /// Write (create or replace) one participant's note.
 ///
@@ -159,12 +167,36 @@ pub struct NoteWritten {
 /// The application's only mutation entry point.
 pub struct Domain<D: Database> {
     db: D,
+    events: Arc<dyn EventSink>,
 }
 
 impl<D: Database> Domain<D> {
-    /// Wrap a database in the mutation boundary.
+    /// Wrap a database in the mutation boundary, publishing nothing.
+    ///
+    /// What the domain and persistence tests use: those are about what SQLite
+    /// holds afterwards, and a channel wired into them would be a second thing
+    /// under test.
     pub fn new(db: D) -> Self {
-        Self { db }
+        Self::with_events(db, Arc::new(NoEvents))
+    }
+
+    /// Wrap a database and publish every committed mutation to `events`.
+    ///
+    /// The application builds one of these, with a composite sink reaching both
+    /// the LAN broadcast and the Host's own window (ADR-0018). One `Domain` for
+    /// both transports is ADR-0012; one sink for both audiences is the same
+    /// argument applied to notification.
+    pub fn with_events(db: D, events: Arc<dyn EventSink>) -> Self {
+        Self { db, events }
+    }
+
+    /// Announce a committed fact.
+    ///
+    /// Called only after `self.db.transaction(..)` returned `Ok`. It is
+    /// deliberately infallible: a mutation that is already durable must not be
+    /// able to fail afterwards because nobody was listening.
+    fn publish(&self, event: DomainEvent) {
+        self.events.publish(&event);
     }
 
     /// Create a meeting in `DRAFT`. Host only.
@@ -221,7 +253,12 @@ impl<D: Database> Domain<D> {
             Ok(())
         })?;
 
-        committed(outcome, "creating a meeting")
+        let outcome = committed(outcome, "creating a meeting")?;
+        self.publish(DomainEvent::MeetingCreated {
+            meeting_id: outcome.meeting_id,
+            at: outcome.at,
+        });
+        Ok(outcome)
     }
 
     /// Replace a `DRAFT` meeting's configuration. Host only.
@@ -272,7 +309,12 @@ impl<D: Database> Domain<D> {
             Ok(())
         })?;
 
-        committed(outcome, "updating a meeting")
+        let outcome = committed(outcome, "updating a meeting")?;
+        self.publish(DomainEvent::MeetingUpdated {
+            meeting_id: outcome.meeting_id,
+            at: outcome.at,
+        });
+        Ok(outcome)
     }
 
     /// Add a participant to a `DRAFT` meeting's roster. Host only.
@@ -340,7 +382,13 @@ impl<D: Database> Domain<D> {
             Ok(())
         })?;
 
-        committed(outcome, "adding a participant")
+        let outcome = committed(outcome, "adding a participant")?;
+        self.publish(DomainEvent::ParticipantAdded {
+            meeting_id,
+            participant_id: outcome.participant_id,
+            at: outcome.at,
+        });
+        Ok(outcome)
     }
 
     /// Replace a participant's details. Host only, `DRAFT` only.
@@ -396,7 +444,13 @@ impl<D: Database> Domain<D> {
             Ok(())
         })?;
 
-        committed(outcome, "updating a participant")
+        let outcome = committed(outcome, "updating a participant")?;
+        self.publish(DomainEvent::ParticipantUpdated {
+            meeting_id,
+            participant_id: outcome.participant_id,
+            at: outcome.at,
+        });
+        Ok(outcome)
     }
 
     /// Remove a participant from a `DRAFT` meeting's roster. Host only.
@@ -459,7 +513,13 @@ impl<D: Database> Domain<D> {
             Ok(())
         })?;
 
-        committed(outcome, "removing a participant")
+        let outcome = committed(outcome, "removing a participant")?;
+        self.publish(DomainEvent::ParticipantRemoved {
+            meeting_id,
+            participant_id: outcome.participant_id,
+            at: outcome.at,
+        });
+        Ok(outcome)
     }
 
     /// Mint a join token for an `OPEN` meeting. Host only.
@@ -522,7 +582,15 @@ impl<D: Database> Domain<D> {
             Ok(())
         })?;
 
-        committed(outcome, "issuing a join token")
+        let outcome = committed(outcome, "issuing a join token")?;
+        // The Host is told the link changed. Neither the token nor its hash is
+        // in the event: the plaintext went to the caller that asked for it, and
+        // the hash is nobody's business but the database's (PRD 22.2).
+        self.publish(DomainEvent::JoinTokenIssued {
+            meeting_id: outcome.meeting_id,
+            at: outcome.at,
+        });
+        Ok(outcome)
     }
 
     /// Bind a participant identity to a new session (ADR-0002).
@@ -616,7 +684,16 @@ impl<D: Database> Domain<D> {
             Ok(())
         })?;
 
-        committed(outcome, "claiming an identity")
+        let outcome = committed(outcome, "claiming an identity")?;
+        // No session id in the event. The Host's roster wants to know somebody
+        // joined; a session identifier is not part of that fact, and this event
+        // does not target a socket the way revocation does.
+        self.publish(DomainEvent::IdentityClaimed {
+            meeting_id: outcome.meeting_id,
+            participant_id: outcome.participant_id,
+            at: outcome.at,
+        });
+        Ok(outcome)
     }
 
     /// Acknowledge a participant's claim. Host only.
@@ -630,14 +707,16 @@ impl<D: Database> Domain<D> {
         meeting_id: MeetingId,
         participant_id: ParticipantId,
     ) -> DomainResult<SessionChanged> {
-        self.act_on_session(
+        let outcome = self.act_on_session(
             actor,
             meeting_id,
             participant_id,
             Operation::ApproveClaim { participant_id },
             AuditAction::ParticipantClaimApproved,
             &|tx, proof, session, at| tx.approve_session(proof, session.session_id, at),
-        )
+        )?;
+        self.publish(Self::session_event(&outcome, meeting_id, false));
+        Ok(outcome)
     }
 
     /// End a participant's session. Host only.
@@ -652,14 +731,19 @@ impl<D: Database> Domain<D> {
         meeting_id: MeetingId,
         participant_id: ParticipantId,
     ) -> DomainResult<SessionChanged> {
-        self.act_on_session(
+        let outcome = self.act_on_session(
             actor,
             meeting_id,
             participant_id,
             Operation::RevokeSession { participant_id },
             AuditAction::ParticipantSessionRevoked,
             &|tx, proof, session, at| tx.revoke_session(proof, session.session_id, at),
-        )
+        )?;
+        // Published after the commit, naming the one session that ended. Only
+        // the socket authenticated with that session id closes; the same
+        // participant's other devices are untouched (ADR-0002 rule 5).
+        self.publish(Self::session_event(&outcome, meeting_id, true));
+        Ok(outcome)
     }
 
     /// The shared pipeline behind approving and revoking.
@@ -718,19 +802,52 @@ impl<D: Database> Domain<D> {
         committed(outcome, "changing a session")
     }
 
+    /// The event a session action produced.
+    ///
+    /// Approving and revoking share the pipeline above but not the event: one
+    /// is display state belonging to a person, the other closes exactly one
+    /// socket. Publishing from each caller rather than from the shared pipeline
+    /// is what keeps that difference visible.
+    fn session_event(
+        outcome: &SessionChanged,
+        meeting_id: MeetingId,
+        revoked: bool,
+    ) -> DomainEvent {
+        if revoked {
+            DomainEvent::SessionRevoked {
+                meeting_id,
+                participant_id: outcome.participant_id,
+                // From the row the transaction acted on, never from a caller.
+                session_id: outcome.session_id,
+                at: outcome.at,
+            }
+        } else {
+            DomainEvent::ClaimApproved {
+                meeting_id,
+                participant_id: outcome.participant_id,
+                at: outcome.at,
+            }
+        }
+    }
+
     /// Move a meeting from `DRAFT` to `OPEN`. Host only.
     pub fn open_meeting(
         &self,
         actor: &Actor,
         meeting_id: MeetingId,
     ) -> DomainResult<MeetingTransitioned> {
-        self.transition(
+        let outcome = self.transition(
             actor,
             meeting_id,
             MeetingStatus::Open,
             Operation::OpenMeeting,
             AuditAction::MeetingOpened,
-        )
+        )?;
+        self.publish(DomainEvent::MeetingOpened {
+            meeting_id,
+            at: outcome.at,
+        });
+        Ok(outcome)
     }
 
     /// Move a meeting from `OPEN` to `LOCKED`. Host only.
@@ -742,13 +859,22 @@ impl<D: Database> Domain<D> {
         actor: &Actor,
         meeting_id: MeetingId,
     ) -> DomainResult<MeetingTransitioned> {
-        self.transition(
+        let outcome = self.transition(
             actor,
             meeting_id,
             MeetingStatus::Locked,
             Operation::LockMeeting,
             AuditAction::MeetingLocked,
-        )
+        )?;
+        // The whole room is told, because the lock changes what every
+        // participant's screen should offer. It changes nothing about what the
+        // backend permits: that was re-read inside the transaction, and is
+        // re-read inside every transaction afterwards (section 15).
+        self.publish(DomainEvent::MeetingLocked {
+            meeting_id,
+            at: outcome.at,
+        });
+        Ok(outcome)
     }
 
     fn transition(
@@ -905,7 +1031,17 @@ impl<D: Database> Domain<D> {
             Ok(())
         })?;
 
-        committed(outcome, "writing a note")
+        let outcome = committed(outcome, "writing a note")?;
+        // The version, never the Markdown. A client that may read the note
+        // fetches it through the boundary that decides whether it may.
+        self.publish(DomainEvent::NoteChanged {
+            meeting_id,
+            participant_id,
+            note_id: outcome.note_id,
+            version: outcome.version,
+            at: outcome.at,
+        });
+        Ok(outcome)
     }
 }
 

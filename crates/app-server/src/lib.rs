@@ -9,6 +9,8 @@
 //! - resolves an `app_core::Actor` from a stored credential hash, and never
 //!   from a client-supplied participant id (section 14.1)
 //! - delegates every mutation to `app-core`
+//! - carries committed `app_core::DomainEvent`s to participant sockets, filtered
+//!   by the audience the domain assigned them (ADR-0018)
 //!
 //! # The two credentials
 //!
@@ -16,6 +18,12 @@
 //! | --- | --- | --- |
 //! | join token | the URL path | `Actor::Claimant`, which may only claim |
 //! | session token | `Authorization: Bearer` | `Actor::Participant` |
+//! | session token | `Sec-WebSocket-Protocol` | `Actor::Participant`, on `/ws` |
+//!
+//! The socket uses a different header for one reason: a browser cannot set
+//! `Authorization` on a WebSocket handshake. It resolves through the same
+//! lookup and produces the same actor - see [`ws`] for why the alternatives
+//! (a query string, a cookie, a ticket endpoint) are each worse.
 //!
 //! Neither is ever stored. `app-core` accepts only a `TokenHash`, so the
 //! plaintext cannot reach the database even by mistake (PRD 22.2, 22.17).
@@ -44,14 +52,22 @@
 //! gap, in the spirit of ADR-0011: a rule that lives only in a reviewer's
 //! attention is a rule some future code path can skip.
 //!
-//! # Not here yet
+//! # Realtime is a notification channel, not a second API
 //!
-//! WebSocket. Realtime is its own roadmap step, and a notification channel with
-//! nothing to notify about would be a guess at what that step needs. When it
-//! arrives it will broadcast only *after* a successful SQLite commit, on
-//! audience-scoped channels (architecture rules section 16).
+//! Events are published by the domain *after* a successful commit and are
+//! carried here on audience-scoped channels (architecture rules section 16).
+//! They name what changed; a client re-reads the value over HTTP, where the
+//! audience rules are applied again. Nothing is writable over the socket and
+//! nothing is authoritative on it.
 //!
-//! Status: Phase 1, step 6. Join, identity claim and session resolution.
+//! # Not here
+//!
+//! Remote participation, notes and export. And no Host socket: the Host is in
+//! the same process as the database and hears events over Tauri IPC, so its own
+//! view never travels on the transport that faces untrusted input (ADR-0018).
+//!
+//! Status: Phase 1, step 7. Join, identity claim, session resolution, and the
+//! participant notification socket with presence.
 
 #![forbid(unsafe_code)]
 
@@ -60,25 +76,26 @@ pub mod dto;
 pub mod error;
 pub mod extract;
 pub mod network;
+pub mod realtime;
 pub mod router;
 pub mod routes;
 pub mod state;
 pub mod token;
+pub mod ws;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 
-use app_core::service::Domain;
-use app_db::Db;
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 pub use error::{ApiError, ApiResult};
 pub use network::{interfaces, join_url, suggested, Interface};
+pub use realtime::Realtime;
 pub use router::router;
 pub use state::LanState;
 pub use token::{hash_token, mint, Credential};
+pub use ws::{Farewell, SUBPROTOCOL};
 
 /// Port the Host uses unless it says otherwise.
 ///
@@ -144,11 +161,11 @@ impl RunningServer {
 /// This is called only when the Host explicitly asks: opening a meeting does not
 /// start a server (ADR-0016). Binding a LAN-reachable socket prompts the
 /// Windows Firewall, and that should happen when someone chose it.
-pub async fn start(
-    db: Arc<Db>,
-    domain: Arc<Domain<Arc<Db>>>,
-    port: u16,
-) -> ServerResult<RunningServer> {
+///
+/// Takes an assembled [`LanState`] rather than the handles to build one, so the
+/// caller decides which mutation boundary and which event sink this server
+/// shares. The Host passes its own of each (ADR-0012).
+pub async fn start(state: LanState, port: u16) -> ServerResult<RunningServer> {
     let requested = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
 
     let listener = TcpListener::bind(requested)
@@ -163,13 +180,18 @@ pub async fn start(
         reason: error.to_string(),
     })?;
 
-    let app = router(LanState::with_domain(db, domain));
+    let app = router(state.clone());
     let (shutdown, shutdown_rx) = oneshot::channel();
 
     let finished = tokio::spawn(async move {
         let served = axum::serve(listener, app)
-            .with_graceful_shutdown(async {
+            .with_graceful_shutdown(async move {
                 let _ = shutdown_rx.await;
+                // Tell the open sockets first. A graceful shutdown waits for
+                // every upgraded connection to finish, and a notification
+                // socket has no reason of its own to finish - so without this,
+                // "stopped" would never arrive and the port would stay held.
+                state.begin_shutdown();
             })
             .await;
 

@@ -13,11 +13,26 @@
  *
  * Argument keys are `snake_case`, matching the Rust parameters and the SQLite
  * columns, so no casing is translated anywhere along the boundary.
+ *
+ * # Events come through here too
+ *
+ * {@link onDomainEvent} is the other half of the boundary: the backend
+ * announces every committed mutation over Tauri IPC, and this module is the
+ * only one that subscribes, for the same reason it is the only one that calls
+ * `invoke`. The Host has no WebSocket - it is in the same process as the
+ * database, so a socket to itself would route its own view through the
+ * transport that exists to face untrusted input (ADR-0018).
+ *
+ * An event is a cue to refetch, never data to render. The payload carries
+ * identifiers, a version and a timestamp; the value lives behind a command.
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { HOST_DOMAIN_EVENT } from '@lan-meeting/contracts';
 import type {
   AuditEntry,
+  HostDomainEvent,
   HostError,
   JoinTokenIssued,
   LanInterface,
@@ -32,6 +47,7 @@ import type {
   ParticipantAdded,
   ParticipantDetailsInput,
   ParticipantId,
+  ParticipantPresence,
   ParticipantRemoved,
   ParticipantSummary,
   ParticipantUpdated,
@@ -214,6 +230,49 @@ export function revokeParticipantSession(
   return call<SessionChanged>('revoke_participant_session', {
     meeting_id: meetingId,
     participant_id: participantId,
+  });
+}
+
+/**
+ * Who is connected, and when each identity was last seen.
+ *
+ * `connected` is the LAN server's live count of open sockets, so everybody
+ * reads as disconnected while the server is stopped - which is true, since
+ * there is nothing to be connected to. `last_seen_at` is the durable half and
+ * means the last moment a socket was observed to open or close; it is not a
+ * heartbeat, so it can lag a silently dropped connection by up to one keepalive
+ * interval (ADR-0018).
+ */
+export function listParticipantPresence(
+  meetingId: MeetingId,
+): Promise<readonly ParticipantPresence[]> {
+  return call<ParticipantPresence[]>('list_participant_presence', {
+    meeting_id: meetingId,
+  });
+}
+
+/* -------------------------------------------------------------------------
+ * Domain events
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Subscribe to every committed mutation in the backend.
+ *
+ * Resolves to an unsubscribe function. Tauri's listener is registered
+ * asynchronously, so a caller that unmounts before it is ready must still be
+ * able to cancel - which is why the returned promise is awaited and then
+ * called, rather than the handle being assumed to exist.
+ *
+ * The handler receives events for **every** meeting, because the Host's window
+ * shows more than one. Filtering by `meeting_id` is the caller's job and is a
+ * display concern, not a security one: the Host may read every row of their own
+ * database either way (ADR-0014).
+ */
+export async function onDomainEvent(
+  handler: (event: HostDomainEvent) => void,
+): Promise<() => void> {
+  return listen<HostDomainEvent>(HOST_DOMAIN_EVENT, (message) => {
+    handler(message.payload);
   });
 }
 
