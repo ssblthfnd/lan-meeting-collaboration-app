@@ -32,7 +32,7 @@
 //! `SQLITE_OPEN_READ_ONLY`. A write attempted through this path fails at the
 //! SQLite level rather than quietly bypassing the mutation boundary.
 
-use app_core::id::{AuditLogId, MeetingId, ParticipantId};
+use app_core::id::{AuditLogId, MeetingId, NoteId, ParticipantId};
 use app_core::meeting::MeetingStatus;
 use app_core::participant::ParticipantDetails;
 use app_core::session::ClaimStatus;
@@ -97,6 +97,78 @@ pub struct ParticipantSummary {
     /// waiting for permission (ADR-0016).
     pub claim_status: ClaimStatus,
     pub created_at: UtcTimestamp,
+}
+
+/// A participant's note, as the Host reads it.
+///
+/// `version` is the number of the newest `note_versions` row, which is also
+/// the count of versions because the sequence is dense from 1. It is carried
+/// so the Host UI can show "version N" beside the note without a second query,
+/// and so a `note.changed` event naming a version can be compared against what
+/// is on screen.
+///
+/// `last_author_type` and `last_author_id` come from that newest history row
+/// rather than from the note: a note has no author column, because with the
+/// Host, the participant and a future import all able to write it, the useful
+/// question is who wrote *this* content (ADR-0008).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteDetail {
+    pub id: NoteId,
+    pub participant_id: ParticipantId,
+    /// GFM-subset Markdown as text (ADR-0007).
+    pub content: String,
+    pub version: i64,
+    pub created_at: UtcTimestamp,
+    pub updated_at: UtcTimestamp,
+    /// `HOST`, `PARTICIPANT` or `REMOTE_IMPORT`, as stored.
+    pub last_author_type: String,
+    /// `None` exactly when `last_author_type` is `HOST` (ADR-0008).
+    pub last_author_id: Option<ParticipantId>,
+}
+
+/// One row of note history, without its body.
+///
+/// Deliberately no `content`. A history list is metadata, and shipping every
+/// historical body to render a list of dates would move a note's entire past
+/// across the boundary every time somebody opened the tab. The body is fetched
+/// for the one version being previewed, through
+/// [`HostQueries::note_version`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteVersionSummary {
+    pub version: i64,
+    pub created_at: UtcTimestamp,
+    pub created_by_type: String,
+    /// `None` exactly when `created_by_type` is `HOST`.
+    pub created_by: Option<ParticipantId>,
+    /// Size of that version's content in bytes, so a list can show how much
+    /// changed without carrying the change.
+    pub byte_length: i64,
+}
+
+/// One historical version, with its body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteVersionDetail {
+    pub version: i64,
+    pub content: String,
+    pub created_at: UtcTimestamp,
+    pub created_by_type: String,
+    pub created_by: Option<ParticipantId>,
+}
+
+/// Whether each participant on the roster has a note yet.
+///
+/// One row per participant, **including those with no note**, so the Host's
+/// list is the roster rather than a subset of it with gaps where the
+/// interesting work has not started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteOverview {
+    pub participant_id: ParticipantId,
+    pub name: String,
+    /// `None` when this participant has no note.
+    pub note_id: Option<NoteId>,
+    /// `None` when this participant has no note.
+    pub version: Option<i64>,
+    pub updated_at: Option<UtcTimestamp>,
 }
 
 /// One audit record.
@@ -245,6 +317,164 @@ impl<'a> HostQueries<'a> {
                             row.get(8)?,
                         ),
                         created_at: row.get::<_, Sql<UtcTimestamp>>(5)?.into_inner(),
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+    }
+
+    /// One participant's note, if they have one.
+    ///
+    /// Scoped by both ids. A participant id belonging to another meeting
+    /// resolves to nothing rather than to that other meeting's note, which is
+    /// the same shape every other scoped read in this crate uses.
+    ///
+    /// The newest history row supplies the version and the authorship. It
+    /// always exists for a note that exists: `Domain::write_note` appends one
+    /// in the same transaction that creates the note, so a note with no
+    /// history would mean something wrote past the mutation boundary.
+    pub fn note(
+        &self,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+    ) -> DbResult<Option<NoteDetail>> {
+        self.db.read(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT n.id, n.participant_id, n.content, n.created_at, n.updated_at,
+                            v.version, v.created_by_type, v.created_by
+                       FROM notes n
+                       JOIN note_versions v ON v.note_id = n.id
+                      WHERE n.meeting_id = ?1 AND n.participant_id = ?2
+                      ORDER BY v.version DESC
+                      LIMIT 1",
+                    params![Sql(meeting_id), Sql(participant_id)],
+                    |row| {
+                        Ok(NoteDetail {
+                            id: row.get::<_, Sql<NoteId>>(0)?.into_inner(),
+                            participant_id: row.get::<_, Sql<ParticipantId>>(1)?.into_inner(),
+                            content: row.get(2)?,
+                            created_at: row.get::<_, Sql<UtcTimestamp>>(3)?.into_inner(),
+                            updated_at: row.get::<_, Sql<UtcTimestamp>>(4)?.into_inner(),
+                            version: row.get(5)?,
+                            last_author_type: row.get(6)?,
+                            last_author_id: row
+                                .get::<_, Option<Sql<ParticipantId>>>(7)?
+                                .map(Sql::into_inner),
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    /// A note's history, newest first, without bodies.
+    ///
+    /// `ORDER BY version DESC` is total on its own: `UNIQUE(note_id, version)`
+    /// makes the number unique per note, and the sequence is dense from 1
+    /// (architecture rules section 26.4).
+    pub fn note_versions(
+        &self,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+    ) -> DbResult<Vec<NoteVersionSummary>> {
+        self.db.read(|conn| {
+            // `length(v.content)` in SQLite counts characters for TEXT, so the
+            // cast to BLOB is what makes this a byte count - the same unit the
+            // domain's 64 KiB limit is expressed in.
+            let mut stmt = conn.prepare(
+                "SELECT v.version, v.created_at, v.created_by_type, v.created_by,
+                        length(CAST(v.content AS BLOB))
+                   FROM note_versions v
+                   JOIN notes n ON n.id = v.note_id
+                  WHERE n.meeting_id = ?1 AND n.participant_id = ?2
+                  ORDER BY v.version DESC",
+            )?;
+            let rows = stmt
+                .query_map(params![Sql(meeting_id), Sql(participant_id)], |row| {
+                    Ok(NoteVersionSummary {
+                        version: row.get(0)?,
+                        created_at: row.get::<_, Sql<UtcTimestamp>>(1)?.into_inner(),
+                        created_by_type: row.get(2)?,
+                        created_by: row
+                            .get::<_, Option<Sql<ParticipantId>>>(3)?
+                            .map(Sql::into_inner),
+                        byte_length: row.get(4)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+    }
+
+    /// One historical version, with its body.
+    ///
+    /// The counterpart to [`HostQueries::note_versions`] carrying no bodies:
+    /// the Host previews one version at a time, so one body crosses the
+    /// boundary at a time.
+    pub fn note_version(
+        &self,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+        version: i64,
+    ) -> DbResult<Option<NoteVersionDetail>> {
+        self.db.read(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT v.version, v.content, v.created_at, v.created_by_type, v.created_by
+                       FROM note_versions v
+                       JOIN notes n ON n.id = v.note_id
+                      WHERE n.meeting_id = ?1 AND n.participant_id = ?2 AND v.version = ?3",
+                    params![Sql(meeting_id), Sql(participant_id), version],
+                    |row| {
+                        Ok(NoteVersionDetail {
+                            version: row.get(0)?,
+                            content: row.get(1)?,
+                            created_at: row.get::<_, Sql<UtcTimestamp>>(2)?.into_inner(),
+                            created_by_type: row.get(3)?,
+                            created_by: row
+                                .get::<_, Option<Sql<ParticipantId>>>(4)?
+                                .map(Sql::into_inner),
+                        })
+                    },
+                )
+                .optional()?;
+            Ok(row)
+        })
+    }
+
+    /// Every participant, and whether they have written a note.
+    ///
+    /// A left join, so a roster of ninety-nine people with two notes returns
+    /// ninety-nine rows. The Host's notes list is the roster; showing only the
+    /// participants who have already written would hide exactly the people the
+    /// Host is looking for.
+    ///
+    /// Ordered by name then id, matching [`HostQueries::participants`] so the
+    /// two lists cannot disagree about order.
+    pub fn notes_overview(&self, meeting_id: MeetingId) -> DbResult<Vec<NoteOverview>> {
+        self.db.read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT p.id, p.name, n.id, n.updated_at,
+                        (SELECT max(v.version) FROM note_versions v WHERE v.note_id = n.id)
+                   FROM participants p
+                   LEFT JOIN notes n
+                     ON n.meeting_id = p.meeting_id AND n.participant_id = p.id
+                  WHERE p.meeting_id = ?1
+                  ORDER BY p.name ASC, p.id ASC",
+            )?;
+            let rows = stmt
+                .query_map(params![Sql(meeting_id)], |row| {
+                    Ok(NoteOverview {
+                        participant_id: row.get::<_, Sql<ParticipantId>>(0)?.into_inner(),
+                        name: row.get(1)?,
+                        note_id: row.get::<_, Option<Sql<NoteId>>>(2)?.map(Sql::into_inner),
+                        updated_at: row
+                            .get::<_, Option<Sql<UtcTimestamp>>>(3)?
+                            .map(Sql::into_inner),
+                        version: row.get(4)?,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;

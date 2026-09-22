@@ -44,6 +44,11 @@ import type {
   MeetingSummary,
   MeetingTransitioned,
   MeetingUpdated,
+  NoteDetail,
+  NoteOverview,
+  NoteVersionDetail,
+  NoteVersionSummary,
+  NoteWritten,
   ParticipantAdded,
   ParticipantDetailsInput,
   ParticipantId,
@@ -249,6 +254,80 @@ export function listParticipantPresence(
   return call<ParticipantPresence[]>('list_participant_presence', {
     meeting_id: meetingId,
   });
+}
+
+/* -------------------------------------------------------------------------
+ * Notes
+ *
+ * The Host may read and write any participant's note while the meeting is not
+ * LOCKED (PRD section 15). Content is GFM-subset Markdown text and is
+ * untrusted input even here: render it through `@lan-meeting/editor`, never
+ * through an HTML sink.
+ *
+ * There is deliberately no restore. Version history is view-only in step 8
+ * (ADR-0019), and no command writes a historical body back.
+ * ------------------------------------------------------------------------- */
+
+/** One participant's note, or `null` if they have not written one. */
+export function getParticipantNote(
+  meetingId: MeetingId,
+  participantId: ParticipantId,
+): Promise<NoteDetail | null> {
+  return call<NoteDetail | null>('get_participant_note', {
+    meeting_id: meetingId,
+    participant_id: participantId,
+  });
+}
+
+/**
+ * Create or replace a participant's note.
+ *
+ * The version, the history row and the audit record are the backend's, derived
+ * inside one transaction. Content rules - size, raw HTML, link schemes - are
+ * enforced there too; the editor checks them first only so the Host is told
+ * while typing rather than on save.
+ */
+export function writeParticipantNote(
+  meetingId: MeetingId,
+  participantId: ParticipantId,
+  content: string,
+): Promise<NoteWritten> {
+  return call<NoteWritten>('write_participant_note', {
+    meeting_id: meetingId,
+    participant_id: participantId,
+    content,
+  });
+}
+
+/** A note's history, newest first, without bodies. */
+export function listNoteVersions(
+  meetingId: MeetingId,
+  participantId: ParticipantId,
+): Promise<readonly NoteVersionSummary[]> {
+  return call<NoteVersionSummary[]>('list_note_versions', {
+    meeting_id: meetingId,
+    participant_id: participantId,
+  });
+}
+
+/** One historical version, with its body. Read-only. */
+export function getNoteVersion(
+  meetingId: MeetingId,
+  participantId: ParticipantId,
+  version: number,
+): Promise<NoteVersionDetail | null> {
+  return call<NoteVersionDetail | null>('get_note_version', {
+    meeting_id: meetingId,
+    participant_id: participantId,
+    version,
+  });
+}
+
+/** Every participant, and whether they have written a note. */
+export function listNotesOverview(
+  meetingId: MeetingId,
+): Promise<readonly NoteOverview[]> {
+  return call<NoteOverview[]>('list_notes_overview', { meeting_id: meetingId });
 }
 
 /* -------------------------------------------------------------------------

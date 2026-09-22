@@ -58,9 +58,10 @@
 //! lock. Its module documentation says exactly what `last_seen_at` promises and
 //! what it does not (ADR-0018).
 //!
-//! Status: Phase 1, step 7. Schema, migrations, pool, transaction helpers, the
-//! domain-port adapter, the Host read queries, the participant read queries,
-//! credential resolution and the presence store all exist.
+//! Status: Phase 1, step 8. Schema, migrations, pool, transaction helpers, the
+//! domain-port adapter, the Host read queries (meetings, participants, audit
+//! and notes), the participant read queries, credential resolution and the
+//! presence store all exist.
 
 #![forbid(unsafe_code)]
 
@@ -78,7 +79,10 @@ pub use error::{DbError, DbResult};
 pub use participant_query::{ClaimableIdentity, JoinableMeeting, OwnIdentity, ParticipantQueries};
 pub use pool::Db;
 pub use presence::{ParticipantPresence, PresenceStore};
-pub use query::{AuditEntryView, HostQueries, MeetingDetail, MeetingSummary, ParticipantSummary};
+pub use query::{
+    AuditEntryView, HostQueries, MeetingDetail, MeetingSummary, NoteDetail, NoteOverview,
+    NoteVersionDetail, NoteVersionSummary, ParticipantSummary,
+};
 pub use repository::DbTx;
 pub use session_store::{JoinTarget, SessionStore};
 pub use sql::Sql;

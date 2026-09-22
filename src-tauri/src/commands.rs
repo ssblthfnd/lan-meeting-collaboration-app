@@ -16,7 +16,8 @@ use tauri::State;
 use crate::dto::{
     AuditEntryDto, JoinTokenIssuedDto, LanInterfaceDto, MeetingConfigurationInput,
     MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
-    MeetingUpdatedDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
+    MeetingUpdatedDto, NoteDetailDto, NoteOverviewDto, NoteVersionDetailDto, NoteVersionSummaryDto,
+    NoteWrittenDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
     ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, SessionChangedDto,
 };
 use crate::error::{HostError, HostErrorKind, HostResult};
@@ -174,6 +175,65 @@ pub fn revoke_participant_session(
     participant_id: String,
 ) -> HostResult<SessionChangedDto> {
     state.revoke_participant_session(&meeting_id, &participant_id)
+}
+
+/* -------------------------------------------------------------------------
+ * Notes
+ *
+ * The Host may read and write any participant's note while the meeting is not
+ * LOCKED (PRD section 15). The write goes through `Domain::write_note`, which
+ * decides the version, appends the immutable history row and writes the audit
+ * record inside one transaction, then publishes `note.changed`.
+ *
+ * There is deliberately no restore command. Version history is view-only in
+ * step 8 (ADR-0019), and a command that wrote a historical body back would be
+ * the whole of restore arriving through the side door.
+ * ------------------------------------------------------------------------- */
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_participant_note(
+    state: State<'_, HostState>,
+    meeting_id: String,
+    participant_id: String,
+) -> HostResult<Option<NoteDetailDto>> {
+    state.get_participant_note(&meeting_id, &participant_id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn write_participant_note(
+    state: State<'_, HostState>,
+    meeting_id: String,
+    participant_id: String,
+    content: String,
+) -> HostResult<NoteWrittenDto> {
+    state.write_participant_note(&meeting_id, &participant_id, &content)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn list_note_versions(
+    state: State<'_, HostState>,
+    meeting_id: String,
+    participant_id: String,
+) -> HostResult<Vec<NoteVersionSummaryDto>> {
+    state.list_note_versions(&meeting_id, &participant_id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn get_note_version(
+    state: State<'_, HostState>,
+    meeting_id: String,
+    participant_id: String,
+    version: i64,
+) -> HostResult<Option<NoteVersionDetailDto>> {
+    state.get_note_version(&meeting_id, &participant_id, version)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn list_notes_overview(
+    state: State<'_, HostState>,
+    meeting_id: String,
+) -> HostResult<Vec<NoteOverviewDto>> {
+    state.list_notes_overview(&meeting_id)
 }
 
 /* -------------------------------------------------------------------------

@@ -1,0 +1,394 @@
+{
+  "$comment": [
+    "Shared note-content fixtures, exercised by both language implementations.",
+    "ADR-0007 requires the TypeScript renderer and the Rust renderer to agree on",
+    "the same GFM subset, and this file is the artefact that keeps them honest:",
+    "TypeScript reads it in the editor tests, Rust reads it in the validator",
+    "tests, and the Rust renderer will read it when export lands.",
+    "",
+    "`valid` entries must pass validation in both languages. `text` is the plain",
+    "text a renderer must produce for the entry, which is what lets a future",
+    "renderer be checked against the same rows without encoding a DOM shape here.",
+    "",
+    "`invalid` entries must be refused in both languages, for the stated reason.",
+    "",
+    "`markdown_repeat` builds oversized content without putting it in this file:",
+    "`unit` repeated `count` times.",
+    "",
+    "Absolute URLs appear here deliberately and only here. `packages/editor/src`",
+    "must contain none, because that directory is bundled into the offline remote",
+    "form, whose build guard rejects any absolute URL in the built bytes."
+  ],
+
+  "reasons": [
+    "empty",
+    "too_large",
+    "raw_html",
+    "link_scheme",
+    "control_character"
+  ],
+
+  "valid": [
+    {
+      "name": "less-than-in-prose",
+      "why": "D6 regression: ordinary mathematical use of `<` is text, not HTML.",
+      "markdown": "a < b",
+      "text": "a < b"
+    },
+    {
+      "name": "less-than-between-numbers",
+      "why": "D6 regression.",
+      "markdown": "2 < 3",
+      "text": "2 < 3"
+    },
+    {
+      "name": "less-than-and-greater-than",
+      "why": "A comparison on both sides must not look like a tag.",
+      "markdown": "2 < 3 > 1",
+      "text": "2 < 3 > 1"
+    },
+    {
+      "name": "unclosed-angle-is-text",
+      "why": "A tag-like run with no closing bracket is not a construct.",
+      "markdown": "the value a<b was measured",
+      "text": "the value a<b was measured"
+    },
+    {
+      "name": "paragraph",
+      "markdown": "Budget was discussed.",
+      "text": "Budget was discussed."
+    },
+    {
+      "name": "two-paragraphs",
+      "markdown": "First point.\n\nSecond point.",
+      "text": "First point.\nSecond point."
+    },
+    {
+      "name": "soft-break-joins-the-line",
+      "why": "GFM: a single newline inside a paragraph is a space.",
+      "markdown": "one\ntwo",
+      "text": "one two"
+    },
+    {
+      "name": "hard-line-break",
+      "why": "Two trailing spaces end the line.",
+      "markdown": "one  \ntwo",
+      "text": "one\ntwo"
+    },
+    {
+      "name": "headings-all-levels",
+      "markdown": "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six",
+      "text": "One\nTwo\nThree\nFour\nFive\nSix"
+    },
+    {
+      "name": "seven-hashes-is-a-paragraph",
+      "why": "D6 supports h1 to h6 only.",
+      "markdown": "####### Seven",
+      "text": "####### Seven"
+    },
+    {
+      "name": "unordered-list",
+      "markdown": "- first\n- second\n- third",
+      "text": "first\nsecond\nthird"
+    },
+    {
+      "name": "ordered-list",
+      "why": "PRD 13.2 and ADR-0007 both require ordered lists.",
+      "markdown": "1. first\n2. second",
+      "text": "first\nsecond"
+    },
+    {
+      "name": "pipe-table",
+      "markdown": "| Item | Owner |\n| --- | --- |\n| Budget | Budi |\n| Venue | Siti |",
+      "text": "Item Owner\nBudget Budi\nVenue Siti"
+    },
+    {
+      "name": "table-with-alignment",
+      "markdown": "| Left | Right |\n| :--- | ---: |\n| a | b |",
+      "text": "Left Right\na b"
+    },
+    {
+      "name": "emphasis",
+      "markdown": "an *important* point",
+      "text": "an important point"
+    },
+    {
+      "name": "strong",
+      "markdown": "a **critical** point",
+      "text": "a critical point"
+    },
+    {
+      "name": "inline-code",
+      "markdown": "run `cargo test` first",
+      "text": "run cargo test first"
+    },
+    {
+      "name": "inline-code-keeps-markup-literal",
+      "why": "Code spans are not parsed for emphasis or links.",
+      "markdown": "`**not strong**`",
+      "text": "**not strong**"
+    },
+    {
+      "name": "fenced-code",
+      "markdown": "```\nline one\nline two\n```",
+      "text": "line one\nline two"
+    },
+    {
+      "name": "fenced-code-with-language",
+      "markdown": "```rust\nfn main() {}\n```",
+      "text": "fn main() {}"
+    },
+    {
+      "name": "fenced-code-may-contain-angle-brackets",
+      "why": "A fence is literal text, so HTML detection must not fire inside it.",
+      "markdown": "```\n<script>alert(1)</script>\n```",
+      "text": "<script>alert(1)</script>"
+    },
+    {
+      "name": "link-https",
+      "markdown": "see [the notes](https://example.invalid/notes)",
+      "text": "see the notes"
+    },
+    {
+      "name": "link-http",
+      "markdown": "see [the intranet](http://intranet.invalid/page)",
+      "text": "see the intranet"
+    },
+    {
+      "name": "link-mailto",
+      "markdown": "write to [Budi](mailto:budi@example.invalid)",
+      "text": "write to Budi"
+    },
+    {
+      "name": "link-scheme-is-case-insensitive",
+      "markdown": "see [it](HTTPS://example.invalid/x)",
+      "text": "see it"
+    },
+    {
+      "name": "link-with-emphasis-inside",
+      "markdown": "[an *important* link](https://example.invalid/x)",
+      "text": "an important link"
+    },
+    {
+      "name": "blockquote-is-plain-text",
+      "why": "Unsupported constructs carry no special meaning; they are not refused.",
+      "markdown": "> quoted",
+      "text": "> quoted"
+    },
+    {
+      "name": "task-list-is-plain-text",
+      "why": "Unsupported construct, rendered literally.",
+      "markdown": "- [x] done",
+      "text": "[x] done"
+    },
+    {
+      "name": "strikethrough-is-plain-text",
+      "why": "Unsupported construct, rendered literally.",
+      "markdown": "~~gone~~",
+      "text": "~~gone~~"
+    },
+    {
+      "name": "setext-heading-is-plain-text",
+      "why": "Unsupported construct; ATX only.",
+      "markdown": "Title\n=====",
+      "text": "Title ====="
+    },
+    {
+      "name": "footnote-is-plain-text",
+      "why": "Unsupported construct, rendered literally.",
+      "markdown": "a claim[^1]",
+      "text": "a claim[^1]"
+    },
+    {
+      "name": "image-is-plain-text",
+      "why": "Images are unsupported and must never become an anchor.",
+      "markdown": "![alt](https://example.invalid/a.png)",
+      "text": "![alt](https://example.invalid/a.png)"
+    },
+    {
+      "name": "nested-list-is-flattened-to-one-level",
+      "why": "Nesting is outside the subset, so a deeper marker becomes a sibling item rather than being folded into the line above or dropped.",
+      "markdown": "- outer\n  - inner",
+      "text": "outer\ninner"
+    },
+    {
+      "name": "tab-and-newline-are-allowed",
+      "markdown": "a\tb\nc",
+      "text": "a\tb c"
+    },
+    {
+      "name": "at-the-size-limit",
+      "why": "65536 bytes exactly is accepted; one more is not.",
+      "markdown_repeat": { "unit": "a", "count": 65536 }
+    }
+  ],
+
+  "invalid": [
+    {
+      "name": "empty",
+      "markdown": "",
+      "reason": "empty"
+    },
+    {
+      "name": "whitespace-only",
+      "markdown": "   \n\t  ",
+      "reason": "empty"
+    },
+    {
+      "name": "over-the-size-limit",
+      "markdown_repeat": { "unit": "a", "count": 65537 },
+      "reason": "too_large"
+    },
+    {
+      "name": "over-the-size-limit-multibyte",
+      "why": "The limit is bytes, not characters: 32769 two-byte characters.",
+      "markdown_repeat": { "unit": "é", "count": 32769 },
+      "reason": "too_large"
+    },
+    {
+      "name": "script-tag",
+      "markdown": "<script>alert(1)</script>",
+      "reason": "raw_html"
+    },
+    {
+      "name": "closing-div",
+      "markdown": "text </div> more",
+      "reason": "raw_html"
+    },
+    {
+      "name": "html-comment",
+      "markdown": "before <!-- comment --> after",
+      "reason": "raw_html"
+    },
+    {
+      "name": "xml-processing-instruction",
+      "markdown": "<?xml version=\"1.0\"?>",
+      "reason": "raw_html"
+    },
+    {
+      "name": "doctype-declaration",
+      "markdown": "<!DOCTYPE html>",
+      "reason": "raw_html"
+    },
+    {
+      "name": "img-tag",
+      "markdown": "<img src=x onerror=alert(1)>",
+      "reason": "raw_html"
+    },
+    {
+      "name": "iframe-tag",
+      "markdown": "<iframe src=\"x\"></iframe>",
+      "reason": "raw_html"
+    },
+    {
+      "name": "self-closing-tag",
+      "markdown": "a <br/> b",
+      "reason": "raw_html"
+    },
+    {
+      "name": "uppercase-tag",
+      "markdown": "<SCRIPT>alert(1)</SCRIPT>",
+      "reason": "raw_html"
+    },
+    {
+      "name": "cdata-section",
+      "markdown": "<![CDATA[ raw ]]>",
+      "reason": "raw_html"
+    },
+    {
+      "name": "autolink-is-refused-as-html-like",
+      "why": "Autolinks are unsupported, and the angle-bracket form is exactly what the HTML scanner recognises.",
+      "markdown": "see <https://example.invalid/x>",
+      "reason": "raw_html"
+    },
+    {
+      "name": "javascript-link",
+      "markdown": "[click](javascript:alert(1))",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "javascript-link-mixed-case",
+      "markdown": "[click](JaVaScRiPt:alert(1))",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "data-link",
+      "markdown": "[click](data:text/html;base64,PHNjcmlwdD4=)",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "file-link",
+      "markdown": "[open](file:///etc/passwd)",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "vbscript-link",
+      "markdown": "[click](vbscript:msgbox)",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "relative-link-has-no-scheme",
+      "why": "Stored links must render as links; a relative target never would.",
+      "markdown": "[notes](../notes.md)",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "protocol-relative-link",
+      "why": "No scheme of its own, so it cannot be allowlisted.",
+      "markdown": "[x](//example.invalid/a)",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "image-with-disallowed-scheme",
+      "why": "An image is plain text, but its target is still scanned.",
+      "markdown": "![a](javascript:alert(1))",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "malformed-link-empty-target",
+      "markdown": "[click]()",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "malformed-link-whitespace-target",
+      "markdown": "[click](   )",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "malformed-link-scheme-only",
+      "markdown": "[click](https:)",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "malformed-link-unparseable",
+      "markdown": "[click](http://[unbalanced)",
+      "reason": "link_scheme"
+    },
+    {
+      "name": "null-byte",
+      "markdown": "before\u0000after",
+      "reason": "control_character"
+    },
+    {
+      "name": "carriage-return",
+      "why": "Transports normalise CRLF before the domain sees it.",
+      "markdown": "line one\r\nline two",
+      "reason": "control_character"
+    },
+    {
+      "name": "escape-character",
+      "markdown": "before\u001bafter",
+      "reason": "control_character"
+    },
+    {
+      "name": "bell-character",
+      "markdown": "before\u0007after",
+      "reason": "control_character"
+    },
+    {
+      "name": "delete-character",
+      "markdown": "before\u007fafter",
+      "reason": "control_character"
+    }
+  ]
+}

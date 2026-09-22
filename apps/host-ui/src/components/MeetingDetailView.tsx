@@ -7,6 +7,7 @@ import { AuditLog } from './AuditLog';
 import { ErrorNotice } from './ErrorNotice';
 import { JoinPanel } from './JoinPanel';
 import { MeetingForm } from './MeetingForm';
+import { NotesPanel } from './NotesPanel';
 import { ParticipantRoster } from './ParticipantRoster';
 import { StatusBadge, statusDescription } from './StatusBadge';
 
@@ -17,7 +18,7 @@ import { StatusBadge, statusDescription } from './StatusBadge';
  * decides for itself. Everything else it shows comes from the backend, and every
  * action it offers is re-judged there.
  */
-type Section = 'configuration' | 'participants' | 'access' | 'audit';
+type Section = 'configuration' | 'participants' | 'access' | 'notes' | 'audit';
 
 export function MeetingDetailView({
   meetingId,
@@ -107,7 +108,7 @@ export function MeetingDetailView({
       {error && <ErrorNotice error={error} />}
 
       <nav className="tabs">
-        {(['configuration', 'participants', 'access', 'audit'] as const).map((name) => (
+        {(['configuration', 'participants', 'access', 'notes', 'audit'] as const).map((name) => (
           <button
             key={name}
             type="button"
@@ -117,6 +118,7 @@ export function MeetingDetailView({
             {name === 'configuration' && 'Configuration'}
             {name === 'participants' && `Participants (${detail.participant_count})`}
             {name === 'access' && 'LAN access'}
+            {name === 'notes' && 'Notes'}
             {name === 'audit' && 'Audit'}
           </button>
         ))}
@@ -231,6 +233,8 @@ export function MeetingDetailView({
       )}
 
       {section === 'access' && <JoinPanel meeting={detail} />}
+
+      {section === 'notes' && <NotesPanel meeting={detail} />}
 
       {section === 'audit' && <AuditLog meetingId={meetingId} />}
     </>

@@ -1126,22 +1126,17 @@ fn participant_metadata(details: &ParticipantDetails) -> Value {
 
 /// Note content rules.
 ///
-/// Only what this step can justify: a write must carry content. Clearing a note
-/// is a separate operation the PRD does not define, and the Markdown subset
-/// itself is validated by the shared editor and renderer (ADR-0007), not here.
+/// Delegated to [`crate::note`], where the rules and their reasoning live.
+/// Kept as a named step in this module so the mutation pipeline still reads
+/// the same as every other one: current state, authorization, lock,
+/// validation, write, history, audit.
+///
+/// The shared editor runs the same rules in the browser, but this is the copy
+/// that decides whether content is stored: it runs inside the transaction, and
+/// content can also arrive from a transport that never saw the editor
+/// (architecture rules section 3, ADR-0019).
 fn validate_note_content(content: &str) -> DomainResult<()> {
-    if content.trim().is_empty() {
-        return Err(DomainError::Validation {
-            field: "note content",
-            expected: "non-empty content",
-            detected: if content.is_empty() {
-                "an empty string".to_owned()
-            } else {
-                "only whitespace".to_owned()
-            },
-        });
-    }
-    Ok(())
+    crate::note::validate(content)
 }
 
 #[cfg(test)]
@@ -1159,6 +1154,28 @@ mod tests {
     #[test]
     fn ordinary_note_content_passes() {
         assert!(validate_note_content("## Agenda\n\nBudget discussed.").is_ok());
+    }
+
+    #[test]
+    fn the_mutation_boundary_applies_the_note_content_rules() {
+        // The rules belong to `crate::note`; this asserts the pipeline calls
+        // them, so content the editor would refuse cannot be stored by a
+        // transport that never ran the editor.
+        for bad in [
+            "<script>alert(1)</script>",
+            "[x](javascript:alert(1))",
+            "before\u{0}after",
+        ] {
+            let err = validate_note_content(bad).unwrap_err();
+            assert!(
+                matches!(err, DomainError::Validation { .. }),
+                "{bad}: {err:?}"
+            );
+        }
+        assert!(validate_note_content(&"a".repeat(crate::note::MAX_NOTE_BYTES + 1)).is_err());
+
+        // And the regression that matters most: arithmetic is not HTML.
+        assert!(validate_note_content("a < b").is_ok());
     }
 
     #[test]

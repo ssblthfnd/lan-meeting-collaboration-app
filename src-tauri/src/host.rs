@@ -33,11 +33,27 @@
 //!
 //! # What is deliberately not here
 //!
-//! The domain also offers `lock_meeting` and `write_note`, and neither is
-//! exposed. Locking is irreversible and belongs with the flow that precedes it;
-//! notes need the shared editor and the Markdown subset (ADR-0007). Listing the
-//! omissions is the point - adding either command should be a deliberate act
+//! The domain also offers `lock_meeting`, and it is not exposed: locking is
+//! irreversible and belongs with the flow that precedes it. Listing the
+//! omission is the point - adding the command should be a deliberate act
 //! rather than a gap someone fills in passing.
+//!
+//! Restoring a note version is not here either, and not anywhere: version
+//! history is view-only in step 8 (ADR-0019). There is no restore command, no
+//! restore operation and no restore audit action to reach for.
+//!
+//! # Line endings are normalised here, and nothing else is
+//!
+//! [`HostState::write_participant_note`] converts CRLF to LF before the content
+//! reaches the domain. That is a **transport** concern: a Windows WebView can
+//! submit CRLF, the domain refuses a carriage return as a control character,
+//! and a Host should not be told their note contains an invalid character they
+//! cannot see.
+//!
+//! Nothing else about the content is touched. The note is stored exactly as
+//! typed - no reformatting, no re-serialisation, no normalising of spacing or
+//! list markers - because a note editor that quietly edits the note is worse
+//! than a plain one (ADR-0019).
 //!
 //! # Events are not published here either
 //!
@@ -54,7 +70,7 @@ use std::sync::Arc;
 use app_core::actor::Actor;
 use app_core::event::{EventSink, NoEvents};
 use app_core::id::{MeetingId, ParticipantId};
-use app_core::service::Domain;
+use app_core::service::{Domain, WriteNote};
 use app_db::presence::PresenceStore;
 use app_db::query::HostQueries;
 use app_db::Db;
@@ -62,7 +78,8 @@ use app_db::Db;
 use crate::dto::{
     AuditEntryDto, JoinTokenIssuedDto, LanInterfaceDto, MeetingConfigurationInput,
     MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
-    MeetingUpdatedDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
+    MeetingUpdatedDto, NoteDetailDto, NoteOverviewDto, NoteVersionDetailDto, NoteVersionSummaryDto,
+    NoteWrittenDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
     ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, SessionChangedDto,
 };
 use crate::error::{HostError, HostErrorKind, HostResult};
@@ -357,6 +374,106 @@ impl HostState {
         Ok(outcome.into())
     }
 
+    /* ------------------------------------------------------------------
+     * Notes
+     *
+     * Writes go through `Domain::write_note`, which validates the content,
+     * re-reads the meeting lock inside its own transaction, appends an
+     * immutable `note_versions` row and writes the audit record - all before
+     * publishing `note.changed`. Nothing about that is repeated here.
+     *
+     * Reads go through `HostQueries`, on the read-only pool (ADR-0014).
+     * ------------------------------------------------------------------ */
+
+    /// One participant's note, or `None` if they have not written one.
+    pub fn get_participant_note(
+        &self,
+        meeting_id: &str,
+        participant_id: &str,
+    ) -> HostResult<Option<NoteDetailDto>> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let participant_id = crate::dto::parse_participant_id(participant_id)?;
+        Ok(self
+            .queries()
+            .note(meeting_id, participant_id)
+            .map_err(query_failed)?
+            .map(NoteDetailDto::from))
+    }
+
+    /// Create or replace a participant's note, as the Host.
+    ///
+    /// The Host may write any participant's note (PRD section 15). The version
+    /// number, the history row and the audit record are the domain's, derived
+    /// inside the transaction; this method parses, normalises line endings, and
+    /// reports what the domain decided.
+    ///
+    /// Whether the meeting still permits the write is re-read inside that
+    /// transaction, so a stale window cannot talk this command into a write
+    /// (architecture rules section 15).
+    pub fn write_participant_note(
+        &self,
+        meeting_id: &str,
+        participant_id: &str,
+        content: &str,
+    ) -> HostResult<NoteWrittenDto> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let participant_id = crate::dto::parse_participant_id(participant_id)?;
+
+        let outcome = self.domain.write_note(
+            &Actor::Host,
+            WriteNote {
+                meeting_id,
+                participant_id,
+                content: normalize_line_endings(content),
+            },
+        )?;
+        Ok(outcome.into())
+    }
+
+    /// A note's history, newest first, without bodies.
+    pub fn list_note_versions(
+        &self,
+        meeting_id: &str,
+        participant_id: &str,
+    ) -> HostResult<Vec<NoteVersionSummaryDto>> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let participant_id = crate::dto::parse_participant_id(participant_id)?;
+        let rows = self
+            .queries()
+            .note_versions(meeting_id, participant_id)
+            .map_err(query_failed)?;
+        Ok(rows.into_iter().map(NoteVersionSummaryDto::from).collect())
+    }
+
+    /// One historical version, with its body.
+    ///
+    /// Read-only in every sense: there is no command that writes a version, and
+    /// the database refuses `UPDATE` on `note_versions` regardless (ADR-0011).
+    pub fn get_note_version(
+        &self,
+        meeting_id: &str,
+        participant_id: &str,
+        version: i64,
+    ) -> HostResult<Option<NoteVersionDetailDto>> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let participant_id = crate::dto::parse_participant_id(participant_id)?;
+        Ok(self
+            .queries()
+            .note_version(meeting_id, participant_id, version)
+            .map_err(query_failed)?
+            .map(NoteVersionDetailDto::from))
+    }
+
+    /// Every participant, and whether they have written a note.
+    pub fn list_notes_overview(&self, meeting_id: &str) -> HostResult<Vec<NoteOverviewDto>> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let rows = self
+            .queries()
+            .notes_overview(meeting_id)
+            .map_err(query_failed)?;
+        Ok(rows.into_iter().map(NoteOverviewDto::from).collect())
+    }
+
     /// Who is connected, and when each identity was last seen.
     ///
     /// Two halves from two places, and the split is the point. `last_seen_at`
@@ -405,6 +522,20 @@ impl HostState {
             .map_err(query_failed)?;
         Ok(rows.into_iter().map(AuditEntryDto::from).collect())
     }
+}
+
+/// Convert CRLF and lone CR to LF.
+///
+/// A transport concern, not a content one. A WebView on Windows can submit
+/// CRLF, the domain refuses a carriage return as a control character, and a
+/// Host should not be shown a validation error about a character they cannot
+/// see and did not type.
+///
+/// Doing it here also keeps stored content uniform, which matters for export
+/// determinism later: a note written on Windows and one written elsewhere must
+/// not differ only in invisible bytes (architecture rules section 19).
+fn normalize_line_endings(content: &str) -> String {
+    content.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 /// A read failed for a reason the Host cannot act on.

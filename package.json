@@ -22,6 +22,7 @@
     "build:web": "npm run build:host && npm run build:lan && npm run build:remote",
     "build": "npm run build:web",
     "typecheck": "npm run typecheck --workspaces --if-present",
+    "test:ts": "vitest run",
     "check:remote-offline": "node scripts/check-remote-form-offline.mjs",
     "tauri": "tauri",
     "dev": "tauri dev",
@@ -29,10 +30,13 @@
     "fmt:rs:check": "cargo fmt --all -- --check",
     "lint:rs": "cargo clippy --workspace --all-targets -- -D warnings",
     "test:rs": "cargo test --workspace",
-    "check": "npm run build:lan && npm run typecheck && npm run fmt:rs:check && npm run lint:rs && npm run test:rs"
+    "check": "npm run build:lan && npm run typecheck && npm run test:ts && npm run fmt:rs:check && npm run lint:rs && npm run test:rs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0",
-    "typescript": "^5.7.2"
+    "@types/node": "^22.20.4",
+    "happy-dom": "^15.11.7",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.7"
   }
 }

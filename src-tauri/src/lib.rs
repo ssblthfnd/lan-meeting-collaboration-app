@@ -54,11 +54,13 @@
 //!
 //! # Not here
 //!
-//! No remote form or import, no note editing, no export.
+//! No remote form or import, no participant note editing, no note restore, no
+//! meeting lock command, no export.
 //!
-//! Status: Phase 1, step 7. Meeting and participant management, the read-only
-//! audit view, the LAN server with the join and identity-claim flow, and
-//! realtime notification with presence.
+//! Status: Phase 1, step 8. Meeting and participant management, the read-only
+//! audit view, the LAN server with the join and identity-claim flow, realtime
+//! notification with presence, and Host note editing with view-only version
+//! history.
 
 #![forbid(unsafe_code)]
 
@@ -132,6 +134,11 @@ pub fn run() {
             commands::list_participants,
             commands::list_audit_entries,
             commands::list_participant_presence,
+            commands::get_participant_note,
+            commands::write_participant_note,
+            commands::list_note_versions,
+            commands::get_note_version,
+            commands::list_notes_overview,
             commands::start_lan_server,
             commands::stop_lan_server,
             commands::lan_server_status,

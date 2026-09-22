@@ -15,7 +15,8 @@
 //! - meeting lifecycle, configuration and the lock rule ([`meeting`])
 //! - the participant roster ([`participant`])
 //! - participant sessions and the claim model ([`session`], [`token`])
-//! - note versioning and audit policy ([`service`], [`audit`])
+//! - note content rules ([`note`]) and note versioning ([`service`])
+//! - audit policy ([`service`], [`audit`])
 //! - domain events and the audience model ([`event`])
 //! - the persistence port ([`port`]) that `app-db` implements
 //!
@@ -24,11 +25,11 @@
 //! [`port::Database`], and notification through [`event::EventSink`], which is
 //! a trait with no channel, no socket and no runtime behind it here.
 //!
-//! Status: Phase 1, step 7. Identifiers, time, the lifecycle, authorization,
+//! Status: Phase 1, step 8. Identifiers, time, the lifecycle, authorization,
 //! note versioning, audit policy and the mutation boundary are implemented, and
 //! so are meeting creation/configuration, the participant roster, the
-//! join-token and identity-claim rules, and the domain event model with its
-//! audience derivation.
+//! join-token and identity-claim rules, the domain event model with its
+//! audience derivation, and the note content rules.
 //!
 //! Resolving a presented credential is still the transport's job: this crate
 //! holds only [`token::TokenHash`], never a token, and has no way to generate or
@@ -43,6 +44,7 @@ pub mod error;
 pub mod event;
 pub mod id;
 pub mod meeting;
+pub mod note;
 pub mod participant;
 pub mod port;
 pub mod service;
@@ -61,6 +63,7 @@ pub use id::{
     RemoteSubmissionId, SessionId, SubmissionId,
 };
 pub use meeting::{Meeting, MeetingConfiguration, MeetingStatus};
+pub use note::{NoteProblem, ALLOWED_LINK_SCHEMES, MAX_NOTE_BYTES};
 pub use participant::{ParticipantDetails, MAX_PARTICIPANTS, MIN_PARTICIPANTS};
 pub use port::{
     Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NewSession, NoteRow,

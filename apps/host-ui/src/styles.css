@@ -412,6 +412,159 @@ code {
   border: 1px solid var(--border);
 }
 
+/* ---- Notes ----
+
+   The rendered-note rules are deliberately plain. Note content is untrusted
+   input (PRD 13.3), so nothing here reacts to it beyond spacing: no styling
+   is driven by an author-supplied value, and the only class the renderer can
+   emit from content is a language tag it already restricted. */
+.notes-layout {
+  display: grid;
+  grid-template-columns: minmax(12rem, 18rem) 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.notes-roster {
+  border-right: 1px solid var(--border);
+  padding-right: 0.75rem;
+}
+
+.note-pick {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.note-pick.active {
+  background: var(--panel);
+  border-color: var(--border);
+}
+
+.note-pick:disabled {
+  opacity: 0.5;
+}
+
+.notes-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.note-panel {
+  margin: 0;
+}
+
+.note-edit {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.note-source {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.note-source textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.note-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.version-preview {
+  border-left: 2px solid var(--border);
+  margin: 0.5rem 0 0.5rem 0.5rem;
+  padding-left: 0.75rem;
+}
+
+.over-limit {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.notice-conflict {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+
+.notice-validation {
+  background: var(--error-bg);
+  color: var(--error-fg);
+}
+
+/* Rendered note content. Long words and wide tables must wrap or scroll
+   rather than stretch the window: a participant can write anything. */
+.note-body {
+  overflow-wrap: anywhere;
+}
+
+.note-body > :first-child {
+  margin-top: 0;
+}
+
+.note-body > :last-child {
+  margin-bottom: 0;
+}
+
+.note-body pre {
+  overflow-x: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 0.5rem;
+}
+
+.note-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+}
+
+.note-body table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.note-body th,
+.note-body td {
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+}
+
+@media (max-width: 60rem) {
+  .notes-layout,
+  .note-edit {
+    grid-template-columns: 1fr;
+  }
+
+  .notes-roster {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: 0.75rem;
+  }
+}
+
 /* ---- LAN access ---- */
 
 .join {

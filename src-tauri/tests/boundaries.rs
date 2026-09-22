@@ -296,7 +296,7 @@ fn every_registered_command_is_reachable_from_the_host_ui_gateway() {
 
     assert_eq!(
         registered.len(),
-        18,
+        23,
         "every registered command must be reachable, found {registered:?}"
     );
 
@@ -391,6 +391,244 @@ fn no_command_offers_to_change_an_audit_entry() {
         commands.contains("fn list_audit_entries"),
         "reading the audit log is the only audit command"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Note content is rendered, never injected
+// ---------------------------------------------------------------------------
+
+#[test]
+fn no_bundle_assigns_html_directly() {
+    // Participant note content is hostile input even in the Host's own window
+    // (PRD 13.3). The renderer in `packages/editor` builds DOM nodes and sets
+    // text through `textContent`, so there is no sink to inject into - and
+    // this is what stops one being introduced beside it.
+    let root = repository_root();
+    let mut files = sources(&root.join("apps/host-ui/src"), &["ts", "tsx"]);
+    files.extend(sources(&root.join("apps/lan-ui/src"), &["ts", "tsx"]));
+    files.extend(sources(&root.join("apps/remote-form/src"), &["ts"]));
+    files.extend(sources(&root.join("packages/editor/src"), &["ts"]));
+
+    for file in files {
+        let contents = code_only(&read(&file));
+        for forbidden in [
+            "innerHTML",
+            "outerHTML",
+            "dangerouslySetInnerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "createContextualFragment",
+        ] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} uses `{forbidden}`: note content is rendered as DOM nodes, never as markup",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn only_the_shared_editor_renders_markdown() {
+    // ADR-0007 puts the editor and renderer in one package so the three
+    // bundles cannot drift into three dialects of the same format. A second
+    // renderer in a component would be that drift starting, and it would be
+    // the copy without the safety argument behind it.
+    let root = repository_root();
+    let mut files = sources(&root.join("apps/host-ui/src"), &["ts", "tsx"]);
+    files.extend(sources(&root.join("apps/lan-ui/src"), &["ts", "tsx"]));
+
+    for file in files {
+        let contents = code_only(&read(&file));
+        // Matched as an import rather than as a word: a component may well
+        // say "marked" in a sentence, and prose is not a dependency.
+        for forbidden in ["marked", "markdown-it", "remark", "showdown", "micromark"] {
+            for form in [
+                format!("from '{forbidden}'"),
+                format!("require('{forbidden}')"),
+            ] {
+                assert!(
+                    !contents.contains(&form),
+                    "{} imports `{forbidden}`: Markdown is rendered by packages/editor",
+                    file.display()
+                );
+            }
+        }
+        // A component may *call* the shared renderer; it may not reimplement
+        // one. Parsing Markdown structure is what an ad-hoc renderer looks
+        // like before it grows.
+        for forbidden in ["parseMarkdown(", "renderBlocks("] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} calls `{forbidden}`: a bundle renders through renderMarkdown, \
+                 and does not walk the document model itself",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn the_shared_editor_stays_bundleable_into_the_offline_form() {
+    // `packages/editor` is bundled into `apps/remote-form`, whose build guard
+    // reads the built bytes and refuses any absolute URL and any network call.
+    // Catching it here means the breakage surfaces in the step that wrote the
+    // code rather than in the step that bundles it - and the offline guard is
+    // never relaxed to accommodate this package (ADR-0009).
+    let root = repository_root();
+
+    for file in sources(&root.join("packages/editor/src"), &["ts"]) {
+        let contents = code_only(&read(&file));
+
+        assert!(
+            !contents.contains("http://") && !contents.contains("https://"),
+            "{} contains an absolute URL literal: the offline form's guard \
+             refuses one in the built bytes",
+            file.display()
+        );
+
+        for forbidden in [
+            "fetch(",
+            "XMLHttpRequest",
+            "WebSocket",
+            "EventSource",
+            "sendBeacon",
+        ] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} mentions `{forbidden}`: the editor makes no network call",
+                file.display()
+            );
+        }
+
+        for framework in [
+            "from 'react'",
+            "from 'react-dom'",
+            "from 'vue'",
+            "from 'svelte'",
+        ] {
+            assert!(
+                !contents.contains(framework),
+                "{} imports a framework: the editor must work without one (ADR-0009)",
+                file.display()
+            );
+        }
+    }
+
+    // And it declares no runtime dependency, so nothing can arrive through the
+    // back door of a transitive install.
+    let manifest = read(&root.join("packages/editor/package.json"));
+    assert!(
+        !manifest.contains("\"dependencies\""),
+        "packages/editor must declare no runtime dependency"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scope: history is view-only, and participant note editing is a later step
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nothing_restores_a_note_version() {
+    // Step 8 decision D1: version history is view-only. `note_versions` is
+    // append-only and the database refuses `UPDATE` on it, but the thing to
+    // prevent is not an edit of history - it is a command that writes a
+    // historical body back as the current note, which is the whole of restore
+    // arriving without the decision being made.
+    let root = repository_root();
+    let mut files = sources(&root.join("src-tauri/src"), &["rs"]);
+    files.extend(sources(&root.join("crates/app-core/src"), &["rs"]));
+    files.extend(sources(&root.join("apps/host-ui/src"), &["ts", "tsx"]));
+
+    for file in files {
+        let contents = code_only(&read(&file));
+        for forbidden in [
+            "restore_note",
+            "restoreNote",
+            "RestoreNoteVersion",
+            "NoteRestored",
+            "note.restored",
+        ] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} mentions `{forbidden}`: note restore is deferred (ADR-0019)",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn the_lan_transport_offers_no_note_route() {
+    // Participant note editing is step 8B. The domain already permits a
+    // participant to write their own note, so the only thing standing between
+    // here and there is a route - which makes its absence worth asserting
+    // rather than assuming.
+    let root = repository_root();
+
+    let routes = code_only(&read(&root.join("crates/app-server/src/router.rs")));
+    assert!(
+        !routes.contains("note"),
+        "app-server declares a note route: participant note editing is step 8B"
+    );
+
+    for file in sources(&root.join("apps/lan-ui/src"), &["ts", "tsx"]) {
+        let contents = code_only(&read(&file));
+        for forbidden in ["/api/note", "writeNote", "fetchNote"] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} reaches for a participant note API: that is step 8B",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn note_links_are_still_only_a_schema() {
+    // Step 8 decision D2. The table, its scheme CHECK and its five-link
+    // triggers exist from step 1; what is deferred is any code that writes
+    // them, because `note_versions` versions content only and what a version
+    // means for links is an unanswered question.
+    let root = repository_root();
+    let mut files = sources(&root.join("src-tauri/src"), &["rs"]);
+    files.extend(sources(&root.join("crates/app-core/src"), &["rs"]));
+
+    for file in files {
+        let contents = code_only(&read(&file));
+        // `NoteLinkId` is deliberately not in this list: the identifier type
+        // has existed since step 1 alongside the table. What is deferred is
+        // code that reads or writes the rows.
+        for forbidden in [
+            "note_links",
+            "WriteNoteLinks",
+            "insert_note_link",
+            "NoteLinkRow",
+            "NoteLinkDto",
+        ] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} touches note links: structured link editing is deferred (ADR-0019)",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn no_export_renderer_has_arrived_early() {
+    // Export is step 12, and the Rust Markdown renderer lands with it. Step 8
+    // added a *validator*, which is a scanner rather than a parser, and the
+    // distinction is worth keeping visible.
+    let root = repository_root();
+    let manifest = read(&root.join("crates/app-core/Cargo.toml"));
+
+    for forbidden in ["pulldown-cmark", "comrak", "markdown", "printpdf", "genpdf"] {
+        assert!(
+            !manifest.contains(forbidden),
+            "app-core must not depend on {forbidden}: the Rust renderer is step 12"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

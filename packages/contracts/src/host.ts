@@ -34,6 +34,7 @@ import type {
   IsoTime,
   MeetingId,
   MeetingStatus,
+  NoteId,
   ParticipantClaimStatus,
   ParticipantId,
 } from './index';
@@ -195,6 +196,87 @@ export interface ParticipantSummary {
    */
   readonly claim_status: ParticipantClaimStatus;
   readonly created_at: Iso8601Utc;
+}
+
+/* -------------------------------------------------------------------------
+ * Notes
+ *
+ * Content is GFM-subset Markdown text (ADR-0007, ADR-0019). It is untrusted
+ * input even in the Host's own window, and must be rendered through
+ * `@lan-meeting/editor`, which builds DOM nodes rather than markup. Nothing in
+ * the Host UI may put it through an HTML sink.
+ * ------------------------------------------------------------------------- */
+
+/** A participant's current note. */
+export interface NoteDetail {
+  readonly note_id: NoteId;
+  readonly participant_id: ParticipantId;
+  /** GFM-subset Markdown. Render it; never assign it as HTML. */
+  readonly content: string;
+  /** Newest history version. Dense from 1, so it is also the version count. */
+  readonly version: number;
+  readonly created_at: Iso8601Utc;
+  readonly updated_at: Iso8601Utc;
+  /** Who wrote the current content. */
+  readonly last_author_type: ActorType;
+  /** `null` exactly when `last_author_type` is `HOST` (ADR-0008). */
+  readonly last_author_id: ParticipantId | null;
+}
+
+/**
+ * One row of note history, without its body.
+ *
+ * A history list is metadata. The body of the one version being previewed is
+ * fetched separately through {@link NoteVersionDetail}, so opening the history
+ * tab does not move a note's entire past across the boundary.
+ */
+export interface NoteVersionSummary {
+  readonly version: number;
+  readonly created_at: Iso8601Utc;
+  readonly created_by_type: ActorType;
+  /** `null` exactly when `created_by_type` is `HOST`. */
+  readonly created_by: ParticipantId | null;
+  /** Size in bytes, the same unit the 64 KiB backend limit uses. */
+  readonly byte_length: number;
+}
+
+/**
+ * One historical version, with its body.
+ *
+ * Read-only in every sense: history is never rewritten (the database refuses
+ * `UPDATE` on it), and step 8 has no restore - there is no command that writes
+ * a historical body back (ADR-0019).
+ */
+export interface NoteVersionDetail {
+  readonly version: number;
+  readonly content: string;
+  readonly created_at: Iso8601Utc;
+  readonly created_by_type: ActorType;
+  readonly created_by: ParticipantId | null;
+}
+
+/** What a successful note write returns. */
+export interface NoteWritten {
+  readonly note_id: NoteId;
+  readonly version: number;
+  /** True when the write created the note rather than replacing its content. */
+  readonly created: boolean;
+  readonly at: Iso8601Utc;
+}
+
+/**
+ * One participant's note status, for the Host's notes list.
+ *
+ * Every participant appears, including those with no note: the list is the
+ * roster, and hiding the people who have not written yet would hide exactly
+ * the ones the Host is looking for.
+ */
+export interface NoteOverview {
+  readonly participant_id: ParticipantId;
+  readonly name: string;
+  readonly note_id: NoteId | null;
+  readonly version: number | null;
+  readonly updated_at: Iso8601Utc | null;
 }
 
 /**

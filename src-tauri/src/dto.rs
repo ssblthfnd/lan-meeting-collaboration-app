@@ -20,12 +20,12 @@
 //! zoneless date and time values, which have no serde impl by design - they are
 //! meaningless without the timezone beside them.
 
-use app_core::id::{Entity, Id, MeetingId, ParticipantId};
+use app_core::id::{Entity, Id, MeetingId, NoteId, ParticipantId};
 use app_core::meeting::{MeetingConfiguration, MeetingStatus};
 use app_core::participant::ParticipantDetails;
 use app_core::service::{
-    MeetingCreated, MeetingTransitioned, MeetingUpdated, ParticipantAdded, ParticipantRemoved,
-    ParticipantUpdated, SessionChanged,
+    MeetingCreated, MeetingTransitioned, MeetingUpdated, NoteWritten, ParticipantAdded,
+    ParticipantRemoved, ParticipantUpdated, SessionChanged,
 };
 use app_core::time::{MeetingDate, MeetingTime, MeetingTimeZone, UtcTimestamp};
 use app_db::query::{AuditEntryView, MeetingDetail, MeetingSummary, ParticipantSummary};
@@ -389,6 +389,132 @@ impl From<SessionChanged> for SessionChangedDto {
         Self {
             participant_id: outcome.participant_id,
             at: outcome.at,
+        }
+    }
+}
+
+/// A participant's note, as the Host reads it.
+///
+/// `content` is GFM-subset Markdown text (ADR-0007). It is **untrusted input**
+/// even here: the Host UI renders it through `packages/editor`, which builds
+/// DOM nodes rather than markup, and never through an HTML sink.
+#[derive(Debug, Clone, Serialize)]
+pub struct NoteDetailDto {
+    pub note_id: NoteId,
+    pub participant_id: ParticipantId,
+    pub content: String,
+    pub version: i64,
+    pub created_at: UtcTimestamp,
+    pub updated_at: UtcTimestamp,
+    /// `HOST`, `PARTICIPANT` or `REMOTE_IMPORT`.
+    pub last_author_type: String,
+    /// `None` exactly when `last_author_type` is `HOST` (ADR-0008).
+    pub last_author_id: Option<ParticipantId>,
+}
+
+impl From<app_db::NoteDetail> for NoteDetailDto {
+    fn from(row: app_db::NoteDetail) -> Self {
+        Self {
+            note_id: row.id,
+            participant_id: row.participant_id,
+            content: row.content,
+            version: row.version,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            last_author_type: row.last_author_type,
+            last_author_id: row.last_author_id,
+        }
+    }
+}
+
+/// One row of note history, without its body.
+///
+/// Deliberately no content: a history list is metadata, and the body of the one
+/// version being previewed is fetched on its own.
+#[derive(Debug, Clone, Serialize)]
+pub struct NoteVersionSummaryDto {
+    pub version: i64,
+    pub created_at: UtcTimestamp,
+    pub created_by_type: String,
+    pub created_by: Option<ParticipantId>,
+    /// Size of that version in bytes, the same unit the 64 KiB limit uses.
+    pub byte_length: i64,
+}
+
+impl From<app_db::NoteVersionSummary> for NoteVersionSummaryDto {
+    fn from(row: app_db::NoteVersionSummary) -> Self {
+        Self {
+            version: row.version,
+            created_at: row.created_at,
+            created_by_type: row.created_by_type,
+            created_by: row.created_by,
+            byte_length: row.byte_length,
+        }
+    }
+}
+
+/// One historical version, with its body.
+#[derive(Debug, Clone, Serialize)]
+pub struct NoteVersionDetailDto {
+    pub version: i64,
+    pub content: String,
+    pub created_at: UtcTimestamp,
+    pub created_by_type: String,
+    pub created_by: Option<ParticipantId>,
+}
+
+impl From<app_db::NoteVersionDetail> for NoteVersionDetailDto {
+    fn from(row: app_db::NoteVersionDetail) -> Self {
+        Self {
+            version: row.version,
+            content: row.content,
+            created_at: row.created_at,
+            created_by_type: row.created_by_type,
+            created_by: row.created_by,
+        }
+    }
+}
+
+/// Outcome of writing a note.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct NoteWrittenDto {
+    pub note_id: NoteId,
+    /// The history row this write produced. Starts at 1 and increases by one.
+    pub version: i64,
+    /// True when this created the note rather than replacing its content.
+    pub created: bool,
+    pub at: UtcTimestamp,
+}
+
+impl From<NoteWritten> for NoteWrittenDto {
+    fn from(outcome: NoteWritten) -> Self {
+        Self {
+            note_id: outcome.note_id,
+            version: outcome.version,
+            created: outcome.created,
+            at: outcome.at,
+        }
+    }
+}
+
+/// One participant's note status, for the Host's notes list.
+#[derive(Debug, Clone, Serialize)]
+pub struct NoteOverviewDto {
+    pub participant_id: ParticipantId,
+    pub name: String,
+    pub note_id: Option<NoteId>,
+    pub version: Option<i64>,
+    pub updated_at: Option<UtcTimestamp>,
+}
+
+impl From<app_db::NoteOverview> for NoteOverviewDto {
+    fn from(row: app_db::NoteOverview) -> Self {
+        Self {
+            participant_id: row.participant_id,
+            name: row.name,
+            note_id: row.note_id,
+            version: row.version,
+            updated_at: row.updated_at,
         }
     }
 }

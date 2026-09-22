@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@lan-meeting/contracts": "0.1.0",
+    "@lan-meeting/editor": "0.1.0",
     "@tauri-apps/api": "^2.1.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

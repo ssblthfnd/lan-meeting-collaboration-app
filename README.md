@@ -10,13 +10,13 @@ a submission file back for the Host to import.
 Everything is stored in a local SQLite database on the Host device.
 **No cloud, no external API, no public hosting, no AI API.**
 
-> **Status: the meeting is live.** A Host can create a meeting, configure it,
-> build a roster of up to 99 participants, open it, start the LAN server and
+> **Status: the Host can take notes.** A Host can create a meeting, configure
+> it, build a roster of up to 99 participants, open it, start the LAN server and
 > show a join link and QR code. Participants claim an identity from a browser on
-> the same network, and both sides now update themselves: the Host sees who is
-> connected, and a participant is told when the meeting is locked or their
-> session is ended. Notes, remote participation and export are not implemented
-> yet. See [Roadmap](#roadmap).
+> the same network, and both sides update themselves. The Host can now write and
+> edit any participant's note in a shared Markdown editor and read its full
+> version history. Participant note editing, remote participation and export are
+> not implemented yet. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -59,7 +59,7 @@ apps/
   remote-form/    Offline single-file HTML form for remote participants
 packages/
   contracts/      Shared TypeScript boundary shapes (API, events, submission)
-  editor/         Shared note editor + Markdown renderer (lands in step 8)
+  editor/         Shared note editor, Markdown subset, renderer and validator
 crates/
   app-core/       Domain core: actors, authorization, lock, audit, versioning
   app-db/         SQLite: connections, migrations, repositories
@@ -109,7 +109,8 @@ npm run build:web          # build all three UI bundles
 npm run build:lan          # participant UI; app-server embeds this bundle
 npm run build:remote       # build the form + verify it is offline-self-contained
 npm run typecheck          # TypeScript across all workspaces
-npm run check              # typecheck + rustfmt + clippy + cargo test
+npm run test:ts            # Vitest: the shared editor package
+npm run check              # typecheck + vitest + rustfmt + clippy + cargo test
 npm run tauri build        # package the desktop app
 ```
 
@@ -123,8 +124,9 @@ Phase 1 is built in order, each step independently demonstrable:
 4. Meeting and participant management in the domain
 5. Host UI: meeting lifecycle, participants, audit view
 6. LAN server, join flow, identity claim, QR
-7. Realtime: audience-scoped WebSocket and presence *(current)*
-8. Host note editing and version history
+7. Realtime: audience-scoped WebSocket and presence
+8. Host note editing and version history *(current)*
+8B. Participant note editing and the LAN note API
 9. Remote form generation
 10. Remote submission import pipeline
 11. Meeting lock
@@ -147,6 +149,11 @@ PDF export is Phase 2 by decision - see
   participant never receives another participant's event; the audience is
   decided in Rust, per event
   ([ADR-0018](docs/adr/0018-realtime-events-and-presence.md)).
+- Note content is GFM-subset Markdown and is treated as untrusted input
+  everywhere it is displayed, including inside the Host application. It is
+  rendered as DOM nodes by `packages/editor`, never as an HTML string, and link
+  schemes are limited to `http`, `https` and `mailto`
+  ([ADR-0019](docs/adr/0019-note-editing-and-markdown-subset.md)).
 - No telemetry, no analytics, no crash reporting, no CDN assets.
 
 ## License
