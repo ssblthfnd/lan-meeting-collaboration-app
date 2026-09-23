@@ -1,0 +1,335 @@
+{
+  "$comment": [
+    "Shared remote-submission fixtures, exercised by both language implementations.",
+    "ADR-0021 freezes the submission v1 shape and its canonical byte form; this file",
+    "is the artefact that keeps the two sides honest. Rust reads it in",
+    "crates/app-remote/tests/fixtures.rs and TypeScript reads it in",
+    "packages/contracts/tests/submission.test.ts, at run time, so a change cannot be",
+    "applied to one language only.",
+    "",
+    "`canonical` rows pin the exact canonical string and its lowercase SHA-256.",
+    "`excluded` rows differ from a canonical row only in a field the hash excludes,",
+    "so their hash must equal that row's.",
+    "`invalid` rows must be refused by the parser, for the stated reason.",
+    "",
+    "Note *content* rules - size, raw HTML, link schemes - are not duplicated here.",
+    "They live in packages/editor/__fixtures__/notes.json and are enforced by",
+    "app-core::note, which is the authority for all three write paths."
+  ],
+  "canonical_prefix": "lan-meeting/remote-submission/v1",
+  "canonical": [
+    {
+      "name": "plain",
+      "why": "The ordinary case: a short GFM-subset note.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "## What I noted\n\n- First point\n- Second point"
+      },
+      "canonical": "lan-meeting/remote-submission/v1\nschema_version=1\nsubmission_id=0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\nmeeting_id=0199c7e1-1111-7222-8333-444455556666\nparticipant_id=0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\nnote=45:## What I noted\n\n- First point\n- Second point",
+      "content_hash": "79f305da217f2c6d8fc869faa7f2d2c06582f9bd9c8ebb34e18915172464f185"
+    },
+    {
+      "name": "crlf",
+      "why": "CRLF must normalise to LF, so it hashes identically to `plain`.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "## What I noted\r\n\r\n- First point\r\n- Second point"
+      },
+      "canonical": "lan-meeting/remote-submission/v1\nschema_version=1\nsubmission_id=0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\nmeeting_id=0199c7e1-1111-7222-8333-444455556666\nparticipant_id=0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\nnote=45:## What I noted\n\n- First point\n- Second point",
+      "content_hash": "79f305da217f2c6d8fc869faa7f2d2c06582f9bd9c8ebb34e18915172464f185"
+    },
+    {
+      "name": "lone_cr",
+      "why": "A lone CR normalises to LF too.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "## What I noted\r\r- First point\r- Second point"
+      },
+      "canonical": "lan-meeting/remote-submission/v1\nschema_version=1\nsubmission_id=0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\nmeeting_id=0199c7e1-1111-7222-8333-444455556666\nparticipant_id=0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\nnote=45:## What I noted\n\n- First point\n- Second point",
+      "content_hash": "79f305da217f2c6d8fc869faa7f2d2c06582f9bd9c8ebb34e18915172464f185"
+    },
+    {
+      "name": "empty_note",
+      "why": "Length-prefixing makes an empty note unambiguous rather than absent.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": ""
+      },
+      "canonical": "lan-meeting/remote-submission/v1\nschema_version=1\nsubmission_id=0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\nmeeting_id=0199c7e1-1111-7222-8333-444455556666\nparticipant_id=0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\nnote=0:",
+      "content_hash": "537bafdac6abb35a308c6ce8c3ac9719bb8f0647d7bb76030a27a5cfdae1378a"
+    },
+    {
+      "name": "unicode",
+      "why": "Non-ASCII text: the length prefix counts UTF-8 bytes, not characters.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "Catatan rapat — anggaran naik 10 %\n\nKeputusan: tunda ke kuartal berikutnya."
+      },
+      "canonical": "lan-meeting/remote-submission/v1\nschema_version=1\nsubmission_id=0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\nmeeting_id=0199c7e1-1111-7222-8333-444455556666\nparticipant_id=0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\nnote=77:Catatan rapat — anggaran naik 10 %\n\nKeputusan: tunda ke kuartal berikutnya.",
+      "content_hash": "c5853eaf3157a18575bae7456728752a8ca4de88fa55a5f421b860dc454c7e0d"
+    },
+    {
+      "name": "astral",
+      "why": "An astral-plane character, where a UTF-16 length would disagree with a UTF-8 one.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "Selesai 👍\n\n| Item | Status |\n| --- | --- |\n| Anggaran | Tunda |"
+      },
+      "canonical": "lan-meeting/remote-submission/v1\nschema_version=1\nsubmission_id=0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\nmeeting_id=0199c7e1-1111-7222-8333-444455556666\nparticipant_id=0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\nnote=66:Selesai 👍\n\n| Item | Status |\n| --- | --- |\n| Anggaran | Tunda |",
+      "content_hash": "8261bbff64d3b52e5bd075d8c1d6562ed2662104a81d7718a405803d64d83b10"
+    },
+    {
+      "name": "line_separators",
+      "why": "U+2028 and U+2029 survive hashing unchanged; only the JSON island escapes them.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "Baris satu Baris dua Baris tiga"
+      },
+      "canonical": "lan-meeting/remote-submission/v1\nschema_version=1\nsubmission_id=0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\nmeeting_id=0199c7e1-1111-7222-8333-444455556666\nparticipant_id=0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\nnote=35:Baris satu Baris dua Baris tiga",
+      "content_hash": "9f1eb8e0012032e3cc19d1f0896f3c1f279d97b849d9b35fb22672f950d7b063"
+    },
+    {
+      "name": "markup_text",
+      "why": "Text that matters to the JSON island must not matter to the hash.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "Compare `a < b` and `2 < 3`\n\nA literal </script> inside a code span: `</script>`"
+      },
+      "canonical": "lan-meeting/remote-submission/v1\nschema_version=1\nsubmission_id=0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\nmeeting_id=0199c7e1-1111-7222-8333-444455556666\nparticipant_id=0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\nnote=80:Compare `a < b` and `2 < 3`\n\nA literal </script> inside a code span: `</script>`",
+      "content_hash": "bca3bf88b139417bf32925ab5849b05adb18d980f0b8445f5f863639923f61a0"
+    },
+    {
+      "name": "newline_injection",
+      "why": "A note that imitates the canonical encoding. The length prefix is what stops it.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "note=0:\nmeeting_id=0199c7e1-dead-7bee-8fff-000000000000"
+      },
+      "canonical": "lan-meeting/remote-submission/v1\nschema_version=1\nsubmission_id=0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\nmeeting_id=0199c7e1-1111-7222-8333-444455556666\nparticipant_id=0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\nnote=55:note=0:\nmeeting_id=0199c7e1-dead-7bee-8fff-000000000000",
+      "content_hash": "127892e94b25b955dc16538f2a8d37ca2c8726113e46386c6451443ec3a6e260"
+    },
+    {
+      "name": "other_note",
+      "why": "One character different from `plain`, so the hash must differ.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "## What I noted\n\n- First point\n- Second POINT"
+      },
+      "canonical": "lan-meeting/remote-submission/v1\nschema_version=1\nsubmission_id=0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\nmeeting_id=0199c7e1-1111-7222-8333-444455556666\nparticipant_id=0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\nnote=45:## What I noted\n\n- First point\n- Second POINT",
+      "content_hash": "c2c1aca3a2c04fff7cdff1e1cae1402f4570c066fbf7dc27eb6c9b31476d6194"
+    }
+  ],
+  "excluded": [
+    {
+      "name": "different_submitted_at",
+      "why": "A later export of unchanged content is the same artifact.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2027-01-01T00:00:00.000Z",
+        "note": "## What I noted\n\n- First point\n- Second point"
+      },
+      "same_hash_as": "plain"
+    },
+    {
+      "name": "different_generated_at",
+      "why": "`generated_at` is excluded from the hash.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 3,
+        "generated_at": "2020-01-01T00:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "## What I noted\n\n- First point\n- Second point"
+      },
+      "same_hash_as": "plain"
+    },
+    {
+      "name": "different_participant_name",
+      "why": "A display name says nothing about the note.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi S.",
+        "source_version": 3,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "## What I noted\n\n- First point\n- Second point"
+      },
+      "same_hash_as": "plain"
+    },
+    {
+      "name": "different_source_version",
+      "why": "`source_version` is advisory and excluded.",
+      "submission": {
+        "schema_version": 1,
+        "submission_id": "0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e",
+        "meeting_id": "0199c7e1-1111-7222-8333-444455556666",
+        "participant_id": "0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff",
+        "participant_name": "Budi Santoso",
+        "source_version": 0,
+        "generated_at": "2026-09-23T01:00:00.000Z",
+        "submitted_at": "2026-09-23T04:12:07.000Z",
+        "note": "## What I noted\n\n- First point\n- Second point"
+      },
+      "same_hash_as": "plain"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "not_json",
+      "reason": "malformed",
+      "raw": "this is not json at all"
+    },
+    {
+      "name": "truncated_json",
+      "reason": "malformed",
+      "raw": "{\"schema_version\":1,\"note\":\"half"
+    },
+    {
+      "name": "json_array",
+      "reason": "malformed",
+      "raw": "[]"
+    },
+    {
+      "name": "json_null",
+      "reason": "malformed",
+      "raw": "null"
+    },
+    {
+      "name": "schema_version_2",
+      "reason": "unsupported_schema",
+      "raw": "{\"schema_version\": 2, \"submission_id\": \"0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\", \"meeting_id\": \"0199c7e1-1111-7222-8333-444455556666\", \"participant_id\": \"0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\", \"participant_name\": \"Budi Santoso\", \"source_version\": 3, \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\", \"note\": \"## What I noted\\n\\n- First point\\n- Second point\"}"
+    },
+    {
+      "name": "schema_version_zero",
+      "reason": "unsupported_schema",
+      "raw": "{\"schema_version\": 0, \"submission_id\": \"0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\", \"meeting_id\": \"0199c7e1-1111-7222-8333-444455556666\", \"participant_id\": \"0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\", \"participant_name\": \"Budi Santoso\", \"source_version\": 3, \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\", \"note\": \"## What I noted\\n\\n- First point\\n- Second point\"}"
+    },
+    {
+      "name": "schema_version_string",
+      "reason": "malformed",
+      "raw": "{\"schema_version\": \"1\", \"submission_id\": \"0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\", \"meeting_id\": \"0199c7e1-1111-7222-8333-444455556666\", \"participant_id\": \"0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\", \"participant_name\": \"Budi Santoso\", \"source_version\": 3, \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\", \"note\": \"## What I noted\\n\\n- First point\\n- Second point\"}"
+    },
+    {
+      "name": "missing_submission_id",
+      "reason": "malformed",
+      "raw": "{\"schema_version\": 1, \"meeting_id\": \"0199c7e1-1111-7222-8333-444455556666\", \"participant_id\": \"0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\", \"participant_name\": \"Budi Santoso\", \"source_version\": 3, \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\", \"note\": \"## What I noted\\n\\n- First point\\n- Second point\"}"
+    },
+    {
+      "name": "missing_note",
+      "reason": "malformed",
+      "raw": "{\"schema_version\": 1, \"submission_id\": \"0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\", \"meeting_id\": \"0199c7e1-1111-7222-8333-444455556666\", \"participant_id\": \"0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\", \"participant_name\": \"Budi Santoso\", \"source_version\": 3, \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\"}"
+    },
+    {
+      "name": "missing_participant_id",
+      "reason": "malformed",
+      "raw": "{\"schema_version\": 1, \"submission_id\": \"0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\", \"meeting_id\": \"0199c7e1-1111-7222-8333-444455556666\", \"participant_name\": \"Budi Santoso\", \"source_version\": 3, \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\", \"note\": \"## What I noted\\n\\n- First point\\n- Second point\"}"
+    },
+    {
+      "name": "submission_id_not_a_uuid",
+      "reason": "malformed_id",
+      "raw": "{\"schema_version\": 1, \"submission_id\": \"not-a-uuid\", \"meeting_id\": \"0199c7e1-1111-7222-8333-444455556666\", \"participant_id\": \"0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\", \"participant_name\": \"Budi Santoso\", \"source_version\": 3, \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\", \"note\": \"## What I noted\\n\\n- First point\\n- Second point\"}"
+    },
+    {
+      "name": "meeting_id_uuid_v4",
+      "reason": "malformed_id",
+      "raw": "{\"schema_version\": 1, \"submission_id\": \"0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\", \"meeting_id\": \"9f1b7a10-4c2e-4d3f-8a5b-6c7d8e9f0a1b\", \"participant_id\": \"0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\", \"participant_name\": \"Budi Santoso\", \"source_version\": 3, \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\", \"note\": \"## What I noted\\n\\n- First point\\n- Second point\"}"
+    },
+    {
+      "name": "participant_id_empty",
+      "reason": "malformed_id",
+      "raw": "{\"schema_version\": 1, \"submission_id\": \"0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\", \"meeting_id\": \"0199c7e1-1111-7222-8333-444455556666\", \"participant_id\": \"\", \"participant_name\": \"Budi Santoso\", \"source_version\": 3, \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\", \"note\": \"## What I noted\\n\\n- First point\\n- Second point\"}"
+    },
+    {
+      "name": "note_not_a_string",
+      "reason": "malformed",
+      "raw": "{\"schema_version\": 1, \"submission_id\": \"0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\", \"meeting_id\": \"0199c7e1-1111-7222-8333-444455556666\", \"participant_id\": \"0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\", \"participant_name\": \"Budi Santoso\", \"source_version\": 3, \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\", \"note\": 42}"
+    },
+    {
+      "name": "source_version_not_a_number",
+      "reason": "malformed",
+      "raw": "{\"schema_version\": 1, \"submission_id\": \"0199c7e1-5f2a-7b3c-8d4e-5f6a7b8c9d0e\", \"meeting_id\": \"0199c7e1-1111-7222-8333-444455556666\", \"participant_id\": \"0199c7e1-aaaa-7bbb-8ccc-ddddeeeeffff\", \"participant_name\": \"Budi Santoso\", \"source_version\": \"three\", \"generated_at\": \"2026-09-23T01:00:00.000Z\", \"submitted_at\": \"2026-09-23T04:12:07.000Z\", \"note\": \"## What I noted\\n\\n- First point\\n- Second point\"}"
+    }
+  ]
+}

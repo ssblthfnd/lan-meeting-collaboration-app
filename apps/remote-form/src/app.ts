@@ -1,37 +1,32 @@
-import { MAX_LINKS_PER_NOTE, SUBMISSION_SCHEMA_VERSION } from '@lan-meeting/contracts';
+import { problemMessage, readContext } from './context';
+import { renderForm } from './form';
 
 /**
  * Remote submission form shell.
  *
- * Skeleton only. The immutable metadata block, the note fields, client-side
- * validation and the "Export Submission" action are Phase 1 work and are not
- * implemented yet.
+ * One HTML file that opens offline from `file://`. It has no server, no API, no
+ * CDN and no credential; the Host generated it, sent it by whatever channel
+ * they chose, and will read back whatever the participant exports
+ * (PRD section 10, architecture rules sections 6 and 20).
  *
  * Built with plain DOM APIs and no framework, on purpose (ADR-0009). A
  * framework runtime ships bytes and string literals the offline guard cannot
- * vouch for - React's production build, for example, embeds an absolute
- * documentation URL in its error helper - and this is the one bundle whose
- * contract is that it carries no external dependency at all.
+ * vouch for, and this is the one bundle whose contract is that it carries no
+ * external dependency at all.
  *
- * Deliberately, no comment in this bundle spells out such a URL either: the
- * guard scans the built file, and a comment that survived an unminified build
- * would trip it for no reason.
+ * Deliberately, no comment in this bundle spells out an absolute URL either:
+ * the guard scans the built file, and a comment that survived an unminified
+ * build would trip it for no reason.
  *
- * Invariants that already apply to anything added here:
- * - no network access of any kind; the file must work offline from file://
+ * Invariants that apply to anything added here:
+ * - no network access of any kind; the file must work offline from `file://`
  * - identity metadata is read-only for the participant
- * - the submission leaves the browser only when the participant explicitly
- *   asks for it
+ * - the submission leaves the browser only when the participant asks for it
+ * - nothing assigns `innerHTML`; text reaches the page through `textContent`
+ *   and through the shared renderer, which builds DOM nodes
  */
 
-/**
- * Create an element, optionally with a class name and plain text.
- *
- * Text is always assigned through `textContent`. Nothing in this bundle
- * assigns `innerHTML`: meeting and participant content is hostile input here
- * too, and an HTML sink inside the offline form is a sanitiser bypass that no
- * backend check can catch (architecture rules 20 and 22).
- */
+/** Create an element, optionally with a class name and plain text. */
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className: string | null,
@@ -50,23 +45,24 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-/** Render the form shell into `container`, replacing anything already there. */
+/** Render the form, or say why this file cannot be filled in. */
 export function renderApp(container: HTMLElement): void {
-  const shell = el('main', 'shell');
+  const result = readContext();
 
+  if (result.ok) {
+    renderForm(container, result.context);
+    return;
+  }
+
+  const shell = el('main', 'shell');
   shell.append(
-    el('h1', null, 'Meeting Submission Form'),
-    el('p', 'subtitle', 'Remote participant - project skeleton'),
-    el(
-      'p',
-      null,
-      'This file works offline. Nothing is sent anywhere: a submission is ' +
-        'produced only when you export it yourself.',
-    ),
+    el('h1', null, 'Meeting submission'),
+    el('p', 'notice notice-validation', problemMessage(result.problem)),
     el(
       'p',
       'meta',
-      `Schema version ${SUBMISSION_SCHEMA_VERSION} - up to ${MAX_LINKS_PER_NOTE} links`,
+      'This file works offline and sends nothing anywhere. It only becomes a '
+        + 'form once a meeting host generates one for a named participant.',
     ),
   );
 

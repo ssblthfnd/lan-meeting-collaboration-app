@@ -296,7 +296,7 @@ fn every_registered_command_is_reachable_from_the_host_ui_gateway() {
 
     assert_eq!(
         registered.len(),
-        23,
+        24,
         "every registered command must be reachable, found {registered:?}"
     );
 
@@ -802,7 +802,283 @@ fn no_export_renderer_has_arrived_early() {
 }
 
 // ---------------------------------------------------------------------------
-// Scope: the LAN is the only network, and remote participation is a later step
+// Scope: step 9 generates a remote form, and does not import one
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_remote_crate_holds_no_database_and_no_sql() {
+    // `app-remote` reads untrusted files. It must not also be able to write to
+    // the database: the import transaction is `app-core`'s, reached from
+    // `src-tauri`, and a crate that parses a submission is not the place for a
+    // connection (architecture rules sections 10 and 11).
+    let root = repository_root();
+
+    let manifest = read(&root.join("crates/app-remote/Cargo.toml"));
+    for forbidden in ["app-db", "rusqlite", "r2d2", "refinery"] {
+        assert!(
+            !manifest.contains(forbidden),
+            "app-remote must not depend on {forbidden}: it has no database"
+        );
+    }
+
+    for file in sources(&root.join("crates/app-remote/src"), &["rs"]) {
+        let contents = shipped_code(&file, &read(&file));
+        for forbidden in [
+            "SELECT ",
+            "INSERT ",
+            "UPDATE ",
+            "DELETE ",
+            "BEGIN ",
+            "COMMIT",
+            "Connection",
+            "DomainTx",
+        ] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} mentions `{forbidden}`: app-remote executes no SQL",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn only_the_tauri_shell_may_construct_the_remote_import_actor() {
+    // ADR-0021 decision 14. The crate that reads an untrusted file is not the
+    // crate that produces authority: the actor is built from the Host-selected
+    // meeting and the database-resolved participant, after confirmation.
+    //
+    // Step 9 constructs it nowhere at all - generation asks for no authority -
+    // so the assertion is the strong one for now.
+    let root = repository_root();
+
+    for file in sources(&root.join("crates/app-remote/src"), &["rs"]) {
+        let contents = shipped_code(&file, &read(&file));
+        assert!(
+            !contents.contains("Actor::"),
+            "{} constructs an actor: authority is established in src-tauri, \
+             not in the crate that parses untrusted input",
+            file.display()
+        );
+    }
+
+    let mut transports = sources(&root.join("src-tauri/src"), &["rs"]);
+    transports.extend(sources(&root.join("crates/app-server/src"), &["rs"]));
+    for file in transports {
+        let contents = shipped_code(&file, &read(&file));
+        assert!(
+            !contents.contains("Actor::RemoteImport"),
+            "{} constructs Actor::RemoteImport: remote import is step 10",
+            file.display()
+        );
+    }
+}
+
+#[test]
+fn no_submission_import_has_arrived_with_generation() {
+    // Step 9 is the form. Import - the ledger, the preview, the transaction -
+    // is step 10, and each of these names would be the whole of it arriving
+    // through the side door.
+    let root = repository_root();
+    let mut files = sources(&root.join("src-tauri/src"), &["rs"]);
+    files.extend(sources(&root.join("crates/app-remote/src"), &["rs"]));
+    files.extend(sources(&root.join("crates/app-core/src"), &["rs"]));
+    files.extend(sources(&root.join("crates/app-db/src"), &["rs"]));
+    files.extend(sources(&root.join("crates/app-server/src"), &["rs"]));
+
+    for file in files {
+        let contents = shipped_code(&file, &read(&file));
+        for forbidden in [
+            "remote_submissions",
+            "import_remote_submission",
+            "import_submission",
+            "insert_remote_submission",
+            "RemoteSubmissionRow",
+            "SubmissionResolution",
+        ] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} touches remote submission import: that is step 10",
+                file.display()
+            );
+        }
+    }
+
+    // And no route on the LAN transport could ever accept one. Import is the
+    // Host's, and a participant must not be able to reach it.
+    let router = read(&root.join("crates/app-server/src/router.rs"));
+    assert!(
+        !router.contains("submission") && !router.contains("import"),
+        "the LAN router must expose no import route"
+    );
+}
+
+#[test]
+fn the_generated_artifact_is_held_to_the_offline_contract() {
+    // The npm guard reads the *template*'s built bytes at build time. Nothing
+    // else reads a *generated* file, so `app-remote` carries its own list - and
+    // this asserts that list has not quietly shrunk (ADR-0021 decision 1).
+    let root = repository_root();
+    let generate = read(&root.join("crates/app-remote/src/generate.rs"));
+
+    for required in [
+        "fetch(",
+        "XMLHttpRequest",
+        "WebSocket",
+        "sendBeacon",
+        "EventSource",
+        "Bearer ",
+        "session_token",
+        "join_token",
+        "token_hash",
+    ] {
+        assert!(
+            generate.contains(&format!("\"{required}\"")),
+            "the generated-artifact guard no longer refuses `{required}`"
+        );
+    }
+
+    // Generation must verify before it returns, so a bad artefact is never
+    // written to disk.
+    assert!(
+        generate.contains("verify_artifact(&artifact)?"),
+        "generate() must verify its own output before returning it"
+    );
+
+    // The offline build guard itself is untouched and still literal.
+    let offline = read(&root.join("scripts/check-remote-form-offline.mjs"));
+    for required in [
+        "external script",
+        "external stylesheet",
+        "absolute http(s) URL",
+        "fetch() call",
+        "XMLHttpRequest",
+        "WebSocket",
+        "navigator.sendBeacon",
+        "EventSource",
+    ] {
+        assert!(
+            offline.contains(required),
+            "the offline build guard no longer checks for `{required}`"
+        );
+    }
+}
+
+#[test]
+fn the_offline_form_carries_no_credential_and_calls_nothing() {
+    // The bundle that ends up in a participant's browser with no network at
+    // all. `no_bundle_assigns_html_directly` already covers the HTML sink; this
+    // is about what it could reach for (architecture rules section 20).
+    let root = repository_root();
+
+    for file in sources(&root.join("apps/remote-form/src"), &["ts"]) {
+        let contents = code_only(&read(&file));
+
+        for forbidden in [
+            "fetch(",
+            "XMLHttpRequest",
+            "WebSocket",
+            "EventSource",
+            "sendBeacon",
+            "http://",
+            "https://",
+            // No credential reaches this bundle, because none is ever put in
+            // the artefact it reads (ADR-0021 decision 3).
+            "session_token",
+            "join_token",
+            "token_hash",
+            "Bearer",
+            "Authorization",
+            // A submission leaves the browser only when the participant asks.
+            "submit(",
+            "action=",
+        ] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} mentions `{forbidden}`: the remote form is offline and sends nothing",
+                file.display()
+            );
+        }
+    }
+
+    // The injection point is one element, and the bundle reads it as text.
+    let context = read(&root.join("apps/remote-form/src/context.ts"));
+    assert!(
+        context.contains("textContent") && context.contains("JSON.parse"),
+        "the context must be read from textContent and parsed, never assigned as HTML"
+    );
+}
+
+#[test]
+fn the_remote_form_declares_only_workspace_dependencies() {
+    // ADR-0009: this bundle carries no external dependency at all. The two it
+    // declares are workspace packages that are themselves under the same guard.
+    let root = repository_root();
+    let manifest = read(&root.join("apps/remote-form/package.json"));
+
+    let dependencies = manifest
+        .split("\"dependencies\"")
+        .nth(1)
+        .expect("a dependencies block")
+        .split('}')
+        .next()
+        .expect("the block ends");
+
+    // One line per entry, each of which opens with the quoted package name.
+    // The block's own `: {` is not an entry.
+    let entries: Vec<&str> = dependencies
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('"'))
+        .collect();
+
+    assert!(!entries.is_empty(), "no dependencies were found to check");
+
+    for entry in entries {
+        assert!(
+            entry.starts_with("\"@lan-meeting/"),
+            "the remote form declared a non-workspace dependency: {entry}"
+        );
+    }
+
+    for framework in ["react", "vue", "svelte", "preact", "solid-js"] {
+        assert!(
+            !dependencies.contains(framework),
+            "the remote form must carry no UI framework (ADR-0009): {framework}"
+        );
+    }
+}
+
+#[test]
+fn the_host_never_chooses_where_a_generated_form_goes() {
+    // ADR-0021 decision 10. The directory comes from Tauri's application-data
+    // path, resolved in Rust; the window names a meeting and a participant.
+    let root = repository_root();
+
+    let gateway = read(&root.join("apps/host-ui/src/api/hostApi.ts"));
+    let call = gateway
+        .split("'generate_remote_form'")
+        .nth(1)
+        .expect("the generation call")
+        .split("}")
+        .next()
+        .expect("the argument object ends");
+    for forbidden in ["path", "directory", "folder", "file_name"] {
+        assert!(
+            !call.contains(forbidden),
+            "the window passed `{forbidden}` to generate_remote_form: the backend chooses the path"
+        );
+    }
+
+    let commands = read(&root.join("src-tauri/src/commands.rs"));
+    assert!(
+        commands.contains("app_data_dir()"),
+        "the generation command must resolve the application data directory itself"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scope: the LAN is the only network
 // ---------------------------------------------------------------------------
 
 #[test]

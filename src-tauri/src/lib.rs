@@ -74,7 +74,7 @@ pub mod qr;
 
 pub use error::{ErrorCategory, HostError, HostErrorKind, HostResult};
 pub use events::{TauriEventSink, DOMAIN_EVENT};
-pub use host::{HostState, DATABASE_FILE};
+pub use host::{HostState, DATABASE_FILE, REMOTE_FORM_DIRECTORY};
 pub use lan::{LanLifecycle, LanServerStatus};
 pub use qr::QrMatrix;
 
@@ -139,6 +139,7 @@ pub fn run() {
             commands::list_note_versions,
             commands::get_note_version,
             commands::list_notes_overview,
+            commands::generate_remote_form,
             commands::start_lan_server,
             commands::stop_lan_server,
             commands::lan_server_status,

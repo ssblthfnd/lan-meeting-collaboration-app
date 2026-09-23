@@ -56,6 +56,7 @@ import type {
   ParticipantRemoved,
   ParticipantSummary,
   ParticipantUpdated,
+  RemoteFormGenerated,
   SessionChanged,
 } from '@lan-meeting/contracts';
 
@@ -328,6 +329,41 @@ export function listNotesOverview(
   meetingId: MeetingId,
 ): Promise<readonly NoteOverview[]> {
   return call<NoteOverview[]>('list_notes_overview', { meeting_id: meetingId });
+}
+
+/* -------------------------------------------------------------------------
+ * Remote participation
+ *
+ * Generation only. Importing a submission is a later step and there is
+ * deliberately no command for it yet.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Write a standalone offline remote form for one participant.
+ *
+ * The backend reads the meeting, the participant and their current note, mints
+ * the artefact's `submission_id`, injects all of it into the embedded template,
+ * verifies that the result is still self-contained, and writes the file. The
+ * path comes back so the Host can find it.
+ *
+ * **The window never names a path.** It names a meeting and a participant; the
+ * directory is Tauri's application-data folder, resolved in Rust. There is no
+ * filesystem or dialog plugin installed, and adding one would need its own
+ * decision (ADR-0021 decision 10).
+ *
+ * The generated file carries no credential of any kind and makes no network
+ * request. It is intentionally not an authenticated artefact: what makes an
+ * import trustworthy is the Host reading the preview and confirming it, which
+ * is the step after this one.
+ */
+export function generateRemoteForm(
+  meetingId: MeetingId,
+  participantId: ParticipantId,
+): Promise<RemoteFormGenerated> {
+  return call<RemoteFormGenerated>('generate_remote_form', {
+    meeting_id: meetingId,
+    participant_id: participantId,
+  });
 }
 
 /* -------------------------------------------------------------------------

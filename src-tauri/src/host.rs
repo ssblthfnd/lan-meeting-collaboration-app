@@ -68,19 +68,24 @@ use std::path::Path;
 use std::sync::Arc;
 
 use app_core::actor::Actor;
+use app_core::error::DomainError;
 use app_core::event::{EventSink, NoEvents};
-use app_core::id::{MeetingId, ParticipantId};
+use app_core::id::{MeetingId, ParticipantId, SubmissionId};
+use app_core::meeting::MeetingStatus;
 use app_core::service::{Domain, WriteNote};
+use app_core::time::UtcTimestamp;
 use app_db::presence::PresenceStore;
 use app_db::query::HostQueries;
 use app_db::Db;
+use app_remote::RemoteFormContext;
 
 use crate::dto::{
     AuditEntryDto, JoinTokenIssuedDto, LanInterfaceDto, MeetingConfigurationInput,
     MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
     MeetingUpdatedDto, NoteDetailDto, NoteOverviewDto, NoteVersionDetailDto, NoteVersionSummaryDto,
     NoteWrittenDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
-    ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, SessionChangedDto,
+    ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, RemoteFormGeneratedDto,
+    SessionChangedDto,
 };
 use crate::error::{HostError, HostErrorKind, HostResult};
 
@@ -88,6 +93,13 @@ use crate::error::{HostError, HostErrorKind, HostResult};
 ///
 /// One file, local to this device, never exposed to the network (PRD 22.7, 22.8).
 pub const DATABASE_FILE: &str = "meetings.sqlite3";
+
+/// Folder inside the application data directory for generated remote forms.
+///
+/// Its own directory rather than beside the database: these are files the Host
+/// is expected to open, attach to an email and eventually delete, and the
+/// database is not (ADR-0021 decision 10).
+pub const REMOTE_FORM_DIRECTORY: &str = "remote-forms";
 
 /// Everything a Host command needs.
 pub struct HostState {
@@ -506,6 +518,138 @@ impl HostState {
     }
 
     /* ------------------------------------------------------------------
+     * Remote participation
+     * ------------------------------------------------------------------ */
+
+    /// Generate a standalone offline remote form for one participant.
+    ///
+    /// The Host's half of PRD section 10: a file to send to somebody who is not
+    /// on the network, which they fill in offline and send back.
+    ///
+    /// ```text
+    /// read meeting + participant + note   (HostQueries, read-only)
+    ///   -> mint submission_id             (UUIDv7, here and only here)
+    ///     -> app_remote::generate          template + escaped JSON island
+    ///       -> verify the artefact         refuse rather than write a bad one
+    ///         -> std::fs::write            under `directory`, chosen by the shell
+    /// ```
+    ///
+    /// # Nothing is written to the database
+    ///
+    /// Generating a form mutates nothing: no note, no version, no audit entry
+    /// and no `remote_submissions` row. The ledger row is written when a
+    /// submission is **imported**, atomically with the note it produces, which
+    /// is step 10. Generation is a read and a file.
+    ///
+    /// That is also why the lifecycle check below sits here rather than in the
+    /// domain. It is not enforcement - there is nothing to enforce, because
+    /// nothing is persisted - it is a refusal to hand someone a form that could
+    /// never be imported. The rule that counts is re-read inside the import
+    /// transaction (architecture rules section 15), and it is the same rule:
+    /// `LOCKED` refuses, `DRAFT` and `OPEN` do not (ADR-0021 decision 2).
+    ///
+    /// # The path is the shell's, not the window's
+    ///
+    /// `directory` comes from Tauri's application-data directory, resolved by
+    /// the command layer. The renderer names a meeting and a participant and
+    /// nothing else: a window that could choose a path would be a window that
+    /// could write anywhere. Only the file name is derived from data, and it is
+    /// slugified to `[A-Za-z0-9-]` before it reaches the filesystem.
+    ///
+    /// # No credential, and no actor
+    ///
+    /// The generated file carries no token, hash or URL: `RemoteFormContext` has
+    /// nowhere to put one, and `app-remote` verifies the bytes anyway. No
+    /// `Actor::RemoteImport` is constructed here or anywhere else yet - an
+    /// actor is authority, and generation asks for none (ADR-0021 decisions 3
+    /// and 14).
+    pub fn generate_remote_form(
+        &self,
+        meeting_id: &str,
+        participant_id: &str,
+        directory: &Path,
+    ) -> HostResult<RemoteFormGeneratedDto> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let participant_id = crate::dto::parse_participant_id(participant_id)?;
+
+        let queries = self.queries();
+
+        let meeting = queries
+            .meeting(meeting_id)
+            .map_err(query_failed)?
+            .ok_or_else(|| not_found(meeting_id))?;
+
+        if meeting.status == MeetingStatus::Locked {
+            // A form generated now could never be imported, so the honest
+            // answer is to refuse rather than to produce a file that will be
+            // rejected after somebody has filled it in.
+            return Err(HostError::from(DomainError::MeetingLocked {
+                meeting_id,
+                title: meeting.title.clone(),
+            }));
+        }
+
+        // Scoped to the meeting, so a participant of another one is absent
+        // rather than borrowed.
+        let participant = queries
+            .participants(meeting_id)
+            .map_err(query_failed)?
+            .into_iter()
+            .find(|row| row.id == participant_id)
+            .ok_or_else(|| {
+                HostError::from(DomainError::ParticipantNotFound {
+                    meeting_id,
+                    participant_id,
+                })
+            })?;
+
+        // Absent is a real answer: a participant who has written nothing gets an
+        // empty editor and source version 0 (ADR-0021 decision 4).
+        let note = queries
+            .note(meeting_id, participant_id)
+            .map_err(query_failed)?;
+
+        let submission_id = SubmissionId::new();
+        let generated_at = UtcTimestamp::now();
+
+        let context = RemoteFormContext {
+            schema_version: app_remote::SCHEMA_VERSION,
+            submission_id,
+            meeting_id,
+            meeting_title: meeting.title.clone(),
+            meeting_date: meeting.date.to_storage(),
+            meeting_timezone: meeting.timezone.clone(),
+            participant_id,
+            participant_name: participant.details.name.clone(),
+            source_version: note.as_ref().map_or(0, |row| row.version),
+            existing_content: note.map(|row| row.content).unwrap_or_default(),
+            generated_at: generated_at.to_storage(),
+        };
+
+        // Generation verifies its own output, so a file that is not
+        // self-contained is never written to disk.
+        let html = app_remote::generate(&context)?;
+
+        let file_name =
+            remote_form_file_name(&meeting.title, &participant.details.name, submission_id);
+        let path = directory.join(&file_name);
+
+        std::fs::create_dir_all(directory).map_err(|error| write_failed(directory, &error))?;
+        std::fs::write(&path, html.as_bytes()).map_err(|error| write_failed(&path, &error))?;
+
+        Ok(RemoteFormGeneratedDto {
+            meeting_id,
+            participant_id,
+            submission_id,
+            path: path.display().to_string(),
+            file_name,
+            bytes: html.len() as u64,
+            source_version: context.source_version,
+            generated_at,
+        })
+    }
+
+    /* ------------------------------------------------------------------
      * Audit
      * ------------------------------------------------------------------ */
 
@@ -548,6 +692,78 @@ fn query_failed(error: app_db::DbError) -> HostError {
         HostErrorKind::Persistence,
         "The database could not be read.".to_owned(),
     )
+}
+
+/// A file the Host's own machine would not write.
+///
+/// A full disk, a directory the installation cannot create, a file held open by
+/// something else. The path is named because it is the Host's own machine and
+/// the useful next action is to look at it; the operating system's message goes
+/// to the console rather than into the window.
+fn write_failed(path: &Path, error: &std::io::Error) -> HostError {
+    eprintln!("[host] writing {}: {error}", path.display());
+    HostError::new(
+        HostErrorKind::Persistence,
+        format!(
+            "The remote form could not be written to {}.              Check that the folder exists and there is room on the disk.",
+            path.display()
+        ),
+    )
+}
+
+/// A file name for a generated form.
+///
+/// Convenience only: the application never reads identity from a filename
+/// (architecture rules section 21), and the Host reads every identifier from
+/// inside the file. Renaming it changes nothing.
+///
+/// Slugified to `[A-Za-z0-9-]` before it reaches the filesystem, so a meeting
+/// titled `../../etc/passwd` cannot become a path. The tail of the submission
+/// id is appended because generating a second form must not overwrite the
+/// first: older forms stay valid (ADR-0021 decision 13). The *tail* rather than
+/// the head, because a UUIDv7 begins with a timestamp and two forms made in the
+/// same minute would share it.
+fn remote_form_file_name(
+    meeting_title: &str,
+    participant_name: &str,
+    submission_id: SubmissionId,
+) -> String {
+    fn slug(text: &str) -> String {
+        let mut out = String::new();
+        let mut pending_dash = false;
+
+        for character in text.chars() {
+            if character.is_ascii_alphanumeric() {
+                if pending_dash && !out.is_empty() {
+                    out.push('-');
+                }
+                pending_dash = false;
+                out.push(character);
+            } else {
+                pending_dash = true;
+            }
+            if out.len() >= 40 {
+                break;
+            }
+        }
+
+        out
+    }
+
+    let meeting = slug(meeting_title);
+    let meeting = if meeting.is_empty() {
+        "meeting"
+    } else {
+        &meeting
+    };
+
+    let who = slug(participant_name);
+    let who = if who.is_empty() { "participant" } else { &who };
+
+    let id = submission_id.to_storage();
+    let tail = &id[id.len() - 12..];
+
+    format!("{meeting}-{who}-{tail}.html")
 }
 
 /// The requested meeting does not exist.

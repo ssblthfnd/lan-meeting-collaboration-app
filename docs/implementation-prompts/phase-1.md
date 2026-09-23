@@ -109,9 +109,9 @@ These apply to every step in this file.
 | Step 6 | LAN server & participant join | COMPLETE | `334cdf2` |
 | Step 7 | Realtime updates & participant presence | COMPLETE | `f5e1b1f` |
 | Step 8 | Host note editing & version history | COMPLETE | `27349ec` |
-| Step 8B | Participant note editing over LAN | COMPLETE | uncommitted |
-| Step 9 | Remote form generation | **NEXT** | — |
-| Step 10 | Remote submission import pipeline | PLANNED | — |
+| Step 8B | Participant note editing over LAN | COMPLETE | `120a9c5` |
+| Step 9 | Remote form generation | COMPLETE | uncommitted |
+| Step 10 | Remote submission import pipeline | **NEXT** (partly frozen) | — |
 | Step 11 | Meeting lock | PLANNED | — |
 | Step 12 | Export: Markdown and TXT / AI Context | PLANNED | — |
 
@@ -762,7 +762,7 @@ Do **not** commit. Do **not** push. Leave the working tree available for review.
 
 ## Step 8B — Participant Note Editing over LAN
 
-**Status: COMPLETE** (implemented, uncommitted at the time of writing)
+**Status: COMPLETE** (`120a9c5`)
 
 Everything below is the approved design, and it was implemented as written:
 every decision D1-D7 stands unchanged, `app-core` was not touched, and no
@@ -1108,33 +1108,528 @@ model, the DTOs and the participant-side surface.
 
 ## Step 9 — Remote Form Generation
 
-**Status: PLANNED**
+**Status: COMPLETE** (implemented, uncommitted at the time of writing)
 
-From `README.md` roadmap item 9 and PRD sections 10 and 20.
+From `README.md` roadmap item 9, PRD sections 10, 11 and 20, and architecture
+rules sections 6, 7, 8 and 20. The accepted decision record is
+`docs/adr/0021-remote-form-generation.md`.
 
-Intended scope: generate the self-contained offline HTML form for a remote
-participant, carrying immutable meeting and identity metadata, with no network
-access of any kind and no credential inside it. `packages/editor` is bundled
-here, which is why the editor must carry no literal absolute URL and no
-framework runtime.
+Everything below is the approved design, and it was implemented as written:
+every decision D1-D15 stands unchanged, `app-core` and the migrations were not
+touched, and no migration was created. Three points are worth recording because
+they were open when the design was frozen:
 
-Details beyond the above are **TBD** and should be designed against the PRD and
-ADR-0009 when the step is reached.
+- **D6 was verified empirically and the primary mechanism held.** Vite with
+  `vite-plugin-singlefile` preserves a non-module
+  `<script type="application/json" id="submission-context">` through the build,
+  byte for byte, and the offline guard still passes. The string-literal sentinel
+  fallback was **not** needed and was not built.
+- **The canonical form is a length-prefixed field encoding, not JSON.** D12
+  asked for "the hashed fields in deterministic declaration order" and did not
+  name a format. Two JSON serialisers agreeing byte for byte on every escape is
+  an assumption the contract does not need to make, and the note - the one
+  arbitrary-text field - is what decides the hash. Length-prefixing it removes
+  the question entirely.
+- **Generation is not audited.** It mutates nothing: no note, no version, no
+  audit row, no ledger row. Writing an audit entry would need a new
+  `Operation` in `authz.rs`, which the frozen plan lists as untouched. The
+  import *is* audited, and that is step 10.
+
+A read-only design inspection of the repository at `120a9c5` preceded these
+decisions. If implementation uncovers a contradiction with the authoritative
+architecture, stop and report it rather than resolving it by weakening a
+higher-authority requirement.
+
+### What already exists, verified at `120a9c5`
+
+Step 9 is unusually well prepared, and knowing that prevents rebuilding it:
+
+- `remote_submissions` exists in migration V1 with `submission_id`,
+  `content_hash`, `resolution`, `note_version`, `raw_payload`, the composite
+  foreign key to `participants (meeting_id, id)` and
+  `UNIQUE(meeting_id, participant_id, submission_id, content_hash)`. **No Rust
+  code reads or writes it yet.**
+- `Actor::RemoteImport { meeting_id, participant_id }` exists, reports
+  `REMOTE_IMPORT`, and `authorize()` grants it exactly
+  `Operation::WriteNote { participant_id }` for its own participant. Four tests
+  assert the confinement. **No code constructs it.**
+- `note_versions.created_by_type` already accepts `REMOTE_IMPORT`.
+- `SubmissionId`, `RemoteSubmissionId`, `SUBMISSION_SCHEMA_VERSION` and
+  `SubmissionResolution` all exist.
+- `packages/contracts/src/index.ts` already documents `form-payload.ts` and
+  `submission.v1.ts` as files that should exist. **They do not.**
+- `crates/app-remote` is a 44-line skeleton: `RemoteError` has two variants,
+  `Schema` and `MeetingMismatch`, and nothing else exists.
+- `apps/remote-form` renders four paragraphs. Its offline build guard passes at
+  1.39 kB and **must not be weakened**.
+- `DbError::is_constraint_violation()` exists and its documentation already
+  names duplicate remote submissions as its reason.
+
+### Approved architecture
+
+```text
+apps/remote-form  (npm build + offline guard)
+  └─ dist/index.html
+       └─ rust-embed, via crates/app-remote/build.rs
+            └─ app-remote::generate(context) -> String
+                 └─ src-tauri command
+                      └─ std::fs write into the application data directory
+                           └─ Host UI shows the path and the submission id
+```
+
+The participant's side, entirely offline:
+
+```text
+file:// form
+  └─ JSON island  ->  form state (identity read-only, note editable, prefilled)
+       └─ packages/editor validation
+            └─ Export Submission  ->  Blob download, or copy-to-clipboard fallback
+                 └─ submission JSON, carried back by whatever channel the Host chose
+```
+
+### Frozen decisions
+
+| # | Decision | Outcome |
+| --- | --- | --- |
+| D1 | Structured `links` in the form and the submission | **OMITTED** |
+| D2 | Import lifecycle rule | **`ensure_mutable()`** — DRAFT and OPEN permitted, LOCKED rejected |
+| D3 | A newer form invalidating older ones | **NO** — older forms stay importable |
+| D4 | Prefill the form with the participant's current note | **APPROVED** |
+| D5 | Persist rejected submissions in the ledger | **NO** for the MVP |
+| D6 | Payload injection via an escaped JSON island | **APPROVED**, verified empirically at implementation time |
+| D7 | Blob download plus an offline copy fallback | **APPROVED** |
+| D8 | Cross-language submission fixtures | **APPROVED** |
+| D9 | `source_version` | **ADVISORY**, no database column |
+| D10 | Host filesystem access | **`std::fs` only**, no plugin, no capability change |
+| D11 | Submission artifact identity and duplicate semantics | **FROZEN** — see below |
+| D12 | Canonical hash | **FROZEN** — see below |
+| D13 | Cryptographic signing | **NONE** |
+| D14 | Where `Actor::RemoteImport` is constructed | **`src-tauri` only** |
+| D15 | Step 9 / Step 10 boundary | **FROZEN** — see below |
+
+### D1 — no structured links
+
+The submission carries `note` as GFM-subset Markdown and no `links` array. The
+form offers no link fields. `note_links` stays untouched and
+`boundaries.rs::note_links_are_still_only_a_schema` stays active.
+
+Reason: ADR-0019 decision 9 and ADR-0020 both deferred structured links, for the
+same unanswered question — `note_versions` versions content only. Introducing
+links through the remote form would reopen two accepted decisions from the side
+door. Markdown already carries links under the same three-scheme allowlist.
+
+Architecture rules section 8 lists `links` in the minimal submission shape and
+section 9 requires `link count <= 5`. ADR-0021 decision 6 records the
+reconciliation: with no array there is nothing to count, the five-link limit
+remains PRD section 14's rule and remains enforced by the V1 triggers, and the
+section 9 checklist item is **not applicable** to a submission until structured
+links are built. A parser must not invent a field in order to validate it.
+
+### D2 — the lifecycle rule is the domain's
+
+Remote import uses `Meeting::ensure_mutable()` unchanged:
+
+```text
+DRAFT   permitted
+OPEN    permitted
+LOCKED  rejected, inside the mutating transaction
+```
+
+No transport-specific lifecycle rule. Architecture rules section 9's "meeting
+OPEN?" is read as "the meeting still accepts mutations", which is what
+`ensure_mutable` means and what the LAN route and the Host command already
+enforce. A stricter import-only rule would make three write paths disagree about
+when a note may be written.
+
+### D3 — older forms stay valid
+
+Each generated form carries its own UUIDv7 `submission_id`. Generating a newer
+form does not invalidate an older one; an older submission remains importable
+until the meeting is locked or the participant leaves the roster.
+
+**No revocation table, no expiry column, no invalidation flag, no migration.**
+
+### D4 — the form is prefilled
+
+The generation context carries:
+
+```text
+schema_version
+submission_id            minted by the Host, UUIDv7
+meeting_id, meeting_title, meeting_date, meeting_timezone
+participant_id, participant_name
+source_version           the note version current at generation, 0 if none
+existing_content         the participant's current note, or empty
+generated_at
+```
+
+Identity and meeting metadata are **read-only** in the form (PRD section 10).
+`existing_content` is editable form state. It is informational only: it is never
+an authorization source, never an identity source, and never evidence at import
+time. Without it every remote submission would be a silent rewrite of whatever
+the participant or the Host had already written.
+
+### D5 — rejections are reported, not persisted
+
+| Outcome | Ledger row |
+| --- | --- |
+| malformed or unparseable | none |
+| schema-invalid | none |
+| unknown meeting or participant | none |
+| locked meeting | none |
+| invalid note content | none |
+| duplicate of an imported submission | none — reported from the **existing** row |
+| successful import | one row, atomic with the note, version and audit rows |
+
+No second rejection-write transaction. `REJECTED_DUPLICATE` and
+`REJECTED_INVALID` stay in the schema's CHECK and are **not written** in the
+MVP; using them means revisiting the ledger schema deliberately, in a later
+design.
+
+Two structural reasons, both verified in the V1 schema: a rejection row written
+inside the import transaction would roll back with it, and the composite foreign
+key to `participants (meeting_id, id)` makes a row impossible for exactly the
+rejections that would matter most — an unknown meeting or an unknown
+participant.
+
+### D6 — the JSON island
+
+```html
+<script type="application/json" id="submission-context">null</script>
+```
+
+Read with `textContent` and `JSON.parse`. **Never `innerHTML`** — this bundle
+has no HTML sink (ADR-0009).
+
+Escaping is mandatory and is part of the decision, not an implementation
+detail: `<` as a unicode escape, and likewise U+2028 and U+2029. Escaping `<`
+unconditionally is what makes a closing script tag unspellable inside the
+island. A test with a hostile participant name and a hostile note is required.
+
+Whether Vite with `vite-plugin-singlefile` preserves a non-module
+`<script type="application/json">` is an **expectation, not a verified fact**.
+Verify it empirically during implementation. If it does not survive reliably,
+use the documented string-literal sentinel fallback, which survives minification
+because a string literal is not a comment.
+
+**The offline guard is not weakened for either mechanism.**
+
+### D7 — export, and its fallback
+
+*Export Submission* builds the JSON, wraps it in a `Blob`, and offers it through
+`URL.createObjectURL` and an anchor with `download`. A visible fallback ships
+alongside: a read-only textarea with the same JSON and copy-to-clipboard, because
+blob downloads from a `file://` origin behave inconsistently across browsers.
+
+Both paths are entirely offline. No automatic submission, no upload, no network
+transmission of any kind. The submission leaves the browser only when the
+participant asks for it (architecture rules section 20).
+
+### D8 — shared fixtures
+
+`packages/contracts/__fixtures__/submissions.json`, with `valid` and `invalid`
+groups, each invalid row naming its rejection reason. Read **at run time** by a
+Rust test in `app-remote` and by a TypeScript test, the way
+`packages/editor/__fixtures__/notes.json` is already read by both suites, so a
+change cannot be applied to one language only.
+
+Widen `vitest.config.ts`'s `include` only as far as this requires.
+
+### D9 — `source_version` is advisory
+
+Meaning: the note version current on the Host when the form was generated; `0`
+when no note existed. Displayed in the import preview. **Never a concurrency
+precondition**, never a comparison that blocks an import.
+
+No database column, and **no migration**. It is preserved verbatim in
+`remote_submissions.raw_payload` and may be written into `audit_logs.metadata`.
+This is the answer ADR-0019 decision 10 deferred when it declined
+`expected_version` "because it would need a considered answer for remote import,
+which is deliberately last-write-wins".
+
+### D10 — the Host's filesystem access
+
+Generation: `src-tauri` writes with `std::fs` into the application data
+directory, the command returns the exact path, and the Host UI displays the path
+and the minted `submission_id`.
+
+**No `tauri-plugin-dialog`, no `tauri-plugin-fs`, and no change to
+`src-tauri/capabilities/default.json`.** The existing guard
+`the_window_capability_grants_nothing_beyond_the_core_defaults` stands.
+
+Import (step 10): investigate Tauri's core drag-and-drop path delivery, which
+would hand Rust a path to read with `std::fs` and may need no plugin. If native
+path delivery proves insufficient, fall back to pasting the submission JSON. A
+filesystem plugin is **not** added for file-picker convenience; if the approach
+proves impossible, that is a new architectural decision to be approved
+explicitly.
+
+### D11 — submission artifact identity
+
+`submission_id` is a UUIDv7 **minted by the Host at form generation**, baked
+into the HTML, and returned by the form unchanged. The form never mints one. It
+identifies **a generated artifact**.
+
+| Case | Meaning | Outcome |
+| --- | --- | --- |
+| same `submission_id`, same `content_hash` | the identical file again | duplicate; refused; **no second note version** |
+| same `submission_id`, different `content_hash` | the artifact was altered after generation | **refused**, with an actionable error |
+| different `submission_id` | a different generated artifact | imported on its own terms |
+
+**This supersedes ADR-0008**, which called case 2 "a correction from the same
+participant", and the same sentence in architecture rules section 12. The
+mechanism ADR-0008 specified is unchanged; what changes is the verdict. An
+artifact's content is fixed the moment the participant exports it, so a file
+bearing a known `submission_id` with different content is a file that does not
+match the one thing the Host can check.
+
+**Corrections still work, through regeneration.** A participant who needs to
+resubmit asks the Host for a new form, which carries a new `submission_id` and
+imports under case 3.
+
+Consequence: once a `submission_id` has been imported, nothing else bearing it
+can ever be imported. Detection is a lookup on
+`(meeting_id, participant_id, submission_id)`, already indexed by
+`idx_remote_submissions_identity`; the `UNIQUE(...)` constraint remains the
+backstop for the exact-duplicate case.
+
+### D12 — the canonical hash
+
+Computed by the Host at import time, never by the form, over a canonical form of
+the submission rather than over the file's bytes:
+
+1. parse into the typed submission structure;
+2. normalise the note's line endings — CRLF to LF, lone CR to LF;
+3. serialise the hashed fields in deterministic declaration order;
+4. SHA-256 over those UTF-8 bytes;
+5. store lowercase hexadecimal.
+
+| Hashed | Excluded |
+| --- | --- |
+| `schema_version` | `generated_at` |
+| `submission_id` | `submitted_at` |
+| `meeting_id` | `participant_name` |
+| `participant_id` | `source_version` |
+| normalised `note` | |
+
+Step 2 is the same normalisation `app-server::routes::write_note` already
+applies at the LAN boundary, so a CRLF-mangled file and a clean one hash alike.
+Hashing raw file bytes would refuse an artifact for a reformatting nobody
+intended. `submitted_at` comes from an untrusted remote clock; including it would
+make every export of an unchanged note a different artifact.
+
+`content_hash` serves duplicate detection, artifact-modification detection and
+idempotency. **It is not an authenticity mechanism.**
+
+`sha2` is required by `app-remote`. It is already a workspace dependency and
+already sanctioned by ADR-0006, so no new crate enters the tree.
+
+### D13 — no cryptographic signing
+
+No signing, no HMAC, no embedded secret, no join token, no session token, no
+token hash, and no credential of any kind inside the offline form.
+
+A signing key inside a file that runs offline from `file://` is a key that
+everyone holding the file holds, so the signature would prove only what
+possession of the file already proves. The offline artifact is **intentionally
+not an authenticated credential**.
+
+The trust boundary is unchanged and is stated in PRD section 12:
+
+```text
+database resolution  +  Host preview and confirmation  +  app-core authorization
+```
+
+Stated plainly, because it should be known rather than discovered: a hand-edited
+file naming a different valid participant of the same meeting will import into
+that participant's note if the Host confirms without reading the preview. The
+preview must therefore show the participant name prominently, and import must
+never be one click.
+
+### D14 — where the remote actor comes from
+
+`Actor::RemoteImport { meeting_id, participant_id }` is kept as it is. **Only
+`src-tauri` may construct it.**
+
+`crates/app-remote` parses and validates untrusted submission data and **must
+not** construct it: the crate that reads the file is not the crate that produces
+authority. A boundary guard asserts this.
+
+The participant id inside a submission is a **candidate identifier**. The actor
+is constructed from the **Host-selected meeting** and the **database-resolved
+participant**, after validation and after Host confirmation. `participant_name`
+is displayed for human verification and is never a match key (architecture rules
+sections 10 and 21).
+
+### D15 — the Step 9 / Step 10 boundary
+
+**Step 9 — Remote Form Generation**
+
+- form payload contract
+- submission v1 contract
+- the remote form UI
+- existing-note prefill
+- local validation, through `packages/editor`
+- offline export, with the fallback
+- HTML generation and template embedding
+- the Host generation command
+- minimal Host generation UI
+- cross-language fixtures
+- offline and security guards
+- ADR-0021
+
+**Step 10 — Remote Submission Import** (see its own section)
+
+**Step 11 remains Meeting Lock.**
+
+### Expected implementation file plan
+
+Change only what the implementation actually requires, from this list:
+
+```text
+crates/app-remote/Cargo.toml
+crates/app-remote/build.rs
+crates/app-remote/src/lib.rs
+crates/app-remote/src/context.rs
+crates/app-remote/src/generate.rs
+crates/app-remote/src/submission.rs
+crates/app-remote/tests/generation.rs
+crates/app-remote/tests/fixtures.rs
+packages/contracts/src/form-payload.ts
+packages/contracts/src/submission.v1.ts
+packages/contracts/src/index.ts
+packages/contracts/__fixtures__/submissions.json
+apps/remote-form/package.json
+apps/remote-form/index.html
+apps/remote-form/src/app.ts
+apps/remote-form/src/context.ts
+apps/remote-form/src/form.ts
+apps/remote-form/src/export.ts
+apps/remote-form/src/styles.css
+src-tauri/src/commands.rs
+src-tauri/src/dto.rs
+src-tauri/src/error.rs
+src-tauri/src/lib.rs
+apps/host-ui/src/api/hostApi.ts
+apps/host-ui/src/components/RemoteFormPanel.tsx
+apps/host-ui/src/components/ParticipantRoster.tsx
+apps/host-ui/src/styles.css
+src-tauri/tests/boundaries.rs
+src-tauri/tests/remote_commands.rs
+vitest.config.ts
+package-lock.json
+docs/adr/0021-remote-form-generation.md
+```
+
+### Expected untouched areas
+
+```text
+crates/app-db/migrations/**
+crates/app-core/src/authz.rs
+crates/app-core/src/actor.rs
+crates/app-core/src/note.rs
+crates/app-server/**
+apps/lan-ui/**
+packages/editor/**
+crates/app-export/**
+scripts/check-remote-form-offline.mjs
+src-tauri/capabilities/default.json
+docs/adr/0001 - 0020
+```
+
+If implementation reveals that one of these must change, **stop and report it as
+an unresolved design issue** rather than silently expanding scope.
+
+### Approved test scope
+
+**Unit, `app-remote`.** Canonical serialisation is byte-stable; the hash ignores
+key order, whitespace and `submitted_at`; CRLF and LF payloads hash identically;
+one changed character changes the hash; a wrong `schema_version` is refused with
+expected and detected named; malformed JSON, a missing field and a malformed id
+are each refused; **template injection is escaped** for a hostile participant
+name and for the two unicode line separators; a generated form round-trips its
+payload; a generated form contains no token, hash, join URL or bearer
+credential.
+
+**Command level, `src-tauri`.** Generation returns a complete offline HTML
+string and an exact path; generation for an unknown participant is refused
+actionably; the file written is readable and self-contained.
+
+**Guards.** Command count and gateway reachability updated; the capability set
+unchanged; `app-remote` executes no SQL; `app-remote` never constructs
+`Actor::RemoteImport`; the generated artifact carries no credential and matches
+the offline guard's forbidden-pattern list; the remote form makes no network
+call and sends nothing automatically; `note_links` remain schema-only; the
+offline guard's forbidden list has not shrunk.
+
+**TypeScript.** The shared submission fixtures agree with Rust row by row; the
+form produces a schema-valid submission; the form refuses invalid content using
+`packages/editor`; read-only identity fields are not editable.
+
+### Explicitly not part of Step 9
+
+Structured note links; note merge algorithms; optimistic concurrency or
+`expected_version`; form invalidation, revocation or expiry; cryptographic
+signing; cloud or network submission; automatic upload; filesystem or dialog
+plugins; any new backend or API; PDF; AI; bulk form generation; bulk import; a
+submission history UI; any change to the LAN transport; any change to
+`packages/editor`'s validation rules; any database migration; and the whole of
+Step 10.
 
 ---
 
 ## Step 10 — Remote Submission Import Pipeline
 
-**Status: PLANNED**
+**Status: PLANNED — partly frozen in advance**
 
-From `README.md` roadmap item 10 and PRD sections 11 and 12.
+From `README.md` roadmap item 10, PRD sections 11 and 12, and architecture rules
+sections 9, 10, 11 and 12.
 
 Intended scope: parse, validate and import a submission file as **untrusted
 input**, in a single transaction, with duplicate detection backed by the
 existing `remote_submissions` table. Import updates the participant's single
 note and appends a version; it never creates a second note (ADR-0003).
 
-Details beyond the above are **TBD**.
+### Frozen during the Step 9 design freeze
+
+These were settled alongside Step 9 because they are properties of the artifact
+or of decisions Step 9 depends on. They are **not** open for redesign when Step
+10 is reached:
+
+- **D2** — the lifecycle rule is `Meeting::ensure_mutable()`: DRAFT and OPEN
+  permitted, LOCKED rejected inside the mutating transaction. No
+  transport-specific rule.
+- **D5** — rejected submissions are reported and **not persisted**. No second
+  rejection-write transaction. `REJECTED_DUPLICATE` and `REJECTED_INVALID` stay
+  unused in the MVP. A successful import writes the ledger row atomically with
+  the note, the version and the audit entry.
+- **D9** — `source_version` is advisory, displayed in the preview, never a
+  precondition, and gets no database column.
+- **D11** — artifact identity and duplicate semantics: same id and same hash is
+  a refused duplicate; same id and a different hash is a **refused modified
+  artifact**, not a correction; a different id is a distinct artifact.
+  Corrections go through regeneration.
+- **D12** — the canonical hash, its five steps, and its hashed and excluded
+  fields.
+- **D13** — no signing, and the trust boundary is database resolution plus Host
+  preview and confirmation plus `app-core` authorization.
+- **D14** — `Actor::RemoteImport` is constructed **only** in `src-tauri`, from
+  the Host-selected meeting and the database-resolved participant, after
+  validation and after confirmation. `crates/app-remote` must never construct
+  it.
+
+### Still to be designed
+
+Validation ordering and its error contract; the Host preview and confirmation
+surface; the `app-core` port additions and the import transaction; how the
+ledger row, the note version and the audit entry are written together; the
+`IMPORTED` versus `REPLACED` mapping; the import test matrix; and how the Host
+receives a file at all, given D10's refusal to add a filesystem or dialog plugin
+(investigate Tauri's core drag-and-drop path delivery first, and fall back to
+pasting the submission JSON).
+
+Step 10 gets its own ADR. Everything above that is frozen is recorded in
+ADR-0021, which that ADR will reference rather than restate.
 
 ---
 
@@ -1176,12 +1671,19 @@ Details beyond the above are **TBD**.
 
 ## Current Execution Point
 
-> Phase 1 is complete through Step 8B, which is implemented and awaiting review
-> in the working tree. Step 9 — Remote Form Generation — is the next
-> implementation step and must be executed separately.
+> Phase 1 is complete and pushed through Step 8B. **Step 9 — Remote Form
+> Generation — is implemented and awaiting review in the working tree.** Step 10
+> — Remote Submission Import — is the next implementation step and must be
+> executed separately.
 
 Repository state:
 
-- branch `main`, `HEAD` = `27349ec0f31f081c1bfa64a79ca5053f76baa9b3`
-- Step 8 committed and pushed; Step 8B changes are uncommitted, awaiting review
+- branch `main`, `HEAD` = `120a9c553e29980663fb6418f2e921d3ec44fc71`
+- Steps 0 through 8B committed and pushed; Step 9 changes are uncommitted
 - Rust and TypeScript suites both passing
+- no migration exists beyond `V1` and `V2`, and Step 9 added none
+
+A Host can now generate a standalone offline form for a participant, and a
+remote participant can fill it in and export a submission. **Nothing reads a
+submission back yet** - that is Step 10, and the decisions frozen for it in
+advance are listed in its section.

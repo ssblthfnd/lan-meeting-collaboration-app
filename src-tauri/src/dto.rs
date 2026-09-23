@@ -20,7 +20,7 @@
 //! zoneless date and time values, which have no serde impl by design - they are
 //! meaningless without the timezone beside them.
 
-use app_core::id::{Entity, Id, MeetingId, NoteId, ParticipantId};
+use app_core::id::{Entity, Id, MeetingId, NoteId, ParticipantId, SubmissionId};
 use app_core::meeting::{MeetingConfiguration, MeetingStatus};
 use app_core::participant::ParticipantDetails;
 use app_core::service::{
@@ -375,6 +375,37 @@ pub struct JoinTokenIssuedDto {
     /// any URL already handed out has stopped working.
     pub replaced_previous: bool,
     pub at: UtcTimestamp,
+}
+
+/// Where a generated remote form was written, and what identifies it.
+///
+/// The Host sends the file at `path` to the participant by whatever channel
+/// they like - email, a messaging app, a USB stick. Nothing in this application
+/// sends it anywhere (PRD section 10).
+///
+/// `submission_id` is shown because it is the artefact's identity: it is what
+/// makes re-importing the same file a detected duplicate, and what tells two
+/// forms generated for the same person apart (ADR-0021 decision 7).
+///
+/// The path is chosen by the backend, never by the window. A renderer that
+/// could name a path would be a renderer that could write anywhere.
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteFormGeneratedDto {
+    pub meeting_id: MeetingId,
+    pub participant_id: ParticipantId,
+    /// The artefact identity the Host minted for this generation.
+    pub submission_id: SubmissionId,
+    /// Absolute path of the file that was written.
+    pub path: String,
+    /// Its name alone, which is a convenience and never an identity
+    /// (architecture rules section 21).
+    pub file_name: String,
+    /// Size in bytes, so the Host can see at a glance that a real file landed.
+    pub bytes: u64,
+    /// The note version this form was generated from, or 0 when the participant
+    /// had written nothing. Advisory (ADR-0021 decision 9).
+    pub source_version: i64,
+    pub generated_at: UtcTimestamp,
 }
 
 /// Outcome of a Host action on a participant's session.

@@ -270,6 +270,51 @@ impl From<DomainError> for HostError {
     }
 }
 
+impl From<app_remote::RemoteError> for HostError {
+    /// Map a remote-form refusal onto what the Host is told.
+    ///
+    /// Every variant carries its own sentence already, naming the expected and
+    /// the detected value (architecture rules section 22), so the message is
+    /// taken from `Display` rather than paraphrased here - the same arrangement
+    /// `DomainError` uses above.
+    ///
+    /// The split is by **whose problem it is**. A submission that is malformed,
+    /// of an unknown schema version, or carrying a bad identifier is *input*,
+    /// and the Host can act on it: ask for the file again, or ask for a form
+    /// from a matching build. A missing template or an artefact that failed its
+    /// own offline check is this installation being wrong about itself, which
+    /// is not something the Host can correct in the window - so it lands in
+    /// `Persistence`, the category the UI already treats as "not your fault,
+    /// and not worth retrying".
+    fn from(error: app_remote::RemoteError) -> Self {
+        use app_remote::RemoteError;
+
+        let message = error.to_string();
+
+        match error {
+            RemoteError::Malformed { .. }
+            | RemoteError::UnsupportedSchema { .. }
+            | RemoteError::MeetingMismatch => Self::new(
+                HostErrorKind::Validation {
+                    field: "submission".to_owned(),
+                    expected: "a remote submission this application generated".to_owned(),
+                    detected: message.clone(),
+                },
+                message,
+            ),
+
+            RemoteError::MalformedId { field, detected } => {
+                Self::validation(field, "a canonical UUID version 7", &detected)
+            }
+
+            RemoteError::Template { .. } | RemoteError::Artifact { .. } => {
+                diagnostic("generating a remote form", &message);
+                Self::new(HostErrorKind::Persistence, message)
+            }
+        }
+    }
+}
+
 /// Record a diagnostic the UI will not be shown.
 ///
 /// stderr, not a file and not a service: the Host machine's own console is

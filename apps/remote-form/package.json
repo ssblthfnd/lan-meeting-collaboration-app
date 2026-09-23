@@ -8,10 +8,11 @@
     "dev": "vite",
     "build": "vite build && node ../../scripts/check-remote-form-offline.mjs",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.tests.json"
   },
   "dependencies": {
-    "@lan-meeting/contracts": "0.1.0"
+    "@lan-meeting/contracts": "0.1.0",
+    "@lan-meeting/editor": "0.1.0"
   },
   "devDependencies": {
     "typescript": "^5.7.2",

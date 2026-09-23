@@ -4,6 +4,9 @@
   --bg: #ffffff;
   --fg: #172554;
   --muted: #475569;
+  --line: #cbd5e1;
+  --accent: #1d4ed8;
+  --danger: #b91c1c;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -11,6 +14,9 @@
     --bg: #0b1220;
     --fg: #e2e8f0;
     --muted: #94a3b8;
+    --line: #334155;
+    --accent: #3b82f6;
+    --danger: #f87171;
   }
 }
 
@@ -42,4 +48,136 @@ h1 {
 
 .subtitle {
   margin: 0 0 1.5rem;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 1rem 1.125rem;
+  margin: 0 0 1.25rem;
+}
+
+.card h2 {
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
+}
+
+.fact {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.25rem 0;
+}
+
+.fact-label {
+  color: var(--muted);
+  flex: 0 0 8rem;
+}
+
+.fact-value {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.note-source {
+  display: block;
+  margin: 0 0 0.5rem;
+}
+
+.note-source > span {
+  display: block;
+  color: var(--muted);
+  margin: 0 0 0.375rem;
+}
+
+textarea {
+  width: 100%;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 0.375rem;
+  padding: 0.625rem;
+  resize: vertical;
+}
+
+.submission-text {
+  font-size: 0.8125rem;
+}
+
+.meta {
+  font-size: 0.875rem;
+  margin: 0.25rem 0;
+}
+
+.over-limit {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.notice {
+  border-radius: 0.375rem;
+  padding: 0.625rem 0.75rem;
+  margin: 0.5rem 0;
+  border: 1px solid var(--line);
+}
+
+.notice-validation {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.75rem 0 0;
+}
+
+button {
+  font: inherit;
+  padding: 0.4375rem 0.875rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.note-preview {
+  border: 1px dashed var(--line);
+  border-radius: 0.375rem;
+  padding: 0.25rem 0.75rem;
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.note-preview :is(h1, h2, h3) {
+  font-size: 1rem;
+  margin: 0.75rem 0 0.375rem;
+}
+
+.note-preview table {
+  border-collapse: collapse;
+}
+
+.note-preview :is(th, td) {
+  border: 1px solid var(--line);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+}
+
+.note-preview code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.875em;
 }

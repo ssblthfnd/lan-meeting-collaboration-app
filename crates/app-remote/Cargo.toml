@@ -10,7 +10,17 @@ authors.workspace = true
 
 [dependencies]
 app-core = { workspace = true }
-app-db = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# The canonical submission hash (ADR-0021 decision 8). Already in the tree for
+# the join and session tokens, and already sanctioned by ADR-0006, so this adds
+# no crate to the dependency set that ADR governs.
+sha2 = { workspace = true }
+# Embeds the built `apps/remote-form` template in the binary, the way
+# `app-server` embeds the participant bundle. ADR-0006 named this crate for
+# exactly these two jobs.
+rust-embed = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -15,9 +15,11 @@ Everything is stored in a local SQLite database on the Host device.
 > server and show a join link and QR code. Participants claim an identity from a
 > browser on the same network and write their own note in a shared Markdown
 > editor; the Host sees every note, can edit any of them, and can read the full
-> version history. Both sides update themselves in realtime. Note links, remote
-> participation, the meeting lock and export are not implemented yet. See
-> [Roadmap](#roadmap).
+> version history. Both sides update themselves in realtime. For someone who
+> cannot reach the network, the Host generates a single offline HTML form that
+> the participant fills in and exports as a submission file. Reading those
+> submissions back, note links, the meeting lock and export are not implemented
+> yet. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -127,8 +129,8 @@ Phase 1 is built in order, each step independently demonstrable:
 6. LAN server, join flow, identity claim, QR
 7. Realtime: audience-scoped WebSocket and presence
 8. Host note editing and version history
-8B. Participant note editing over the LAN *(current)*
-9. Remote form generation
+8B. Participant note editing over the LAN
+9. Remote form generation *(current)*
 10. Remote submission import pipeline
 11. Meeting lock
 12. Export: Markdown and TXT / AI Context

@@ -11,6 +11,7 @@
 //! `meetingId` to `meeting_id`, which works but adds a casing convention that
 //! only exists at this boundary and only shows up when it is got wrong.
 
+use tauri::Manager;
 use tauri::State;
 
 use crate::dto::{
@@ -18,10 +19,11 @@ use crate::dto::{
     MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
     MeetingUpdatedDto, NoteDetailDto, NoteOverviewDto, NoteVersionDetailDto, NoteVersionSummaryDto,
     NoteWrittenDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
-    ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, SessionChangedDto,
+    ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, RemoteFormGeneratedDto,
+    SessionChangedDto,
 };
 use crate::error::{HostError, HostErrorKind, HostResult};
-use crate::host::HostState;
+use crate::host::{HostState, REMOTE_FORM_DIRECTORY};
 use crate::lan::{LanLifecycle, LanServerStatus};
 
 /* -------------------------------------------------------------------------
@@ -234,6 +236,44 @@ pub fn list_notes_overview(
     meeting_id: String,
 ) -> HostResult<Vec<NoteOverviewDto>> {
     state.list_notes_overview(&meeting_id)
+}
+
+/* -------------------------------------------------------------------------
+ * Remote participation
+ *
+ * Generation only. A form is produced for a participant the Host selected, the
+ * file is written by Rust, and the path comes back. Importing a submission is
+ * step 10 and there is deliberately no command for it yet.
+ * ------------------------------------------------------------------------- */
+
+/// Write a standalone offline remote form for one participant.
+///
+/// The one command that touches the filesystem, and the only one that needs
+/// `AppHandle`: the output directory is Tauri's application-data directory,
+/// resolved here. **The window never names a path.** It names a meeting and a
+/// participant; a renderer that could choose a directory could write anywhere,
+/// and no filesystem or dialog plugin is installed to let it try
+/// (ADR-0021 decision 10).
+#[tauri::command(rename_all = "snake_case")]
+pub fn generate_remote_form(
+    app: tauri::AppHandle,
+    state: State<'_, HostState>,
+    meeting_id: String,
+    participant_id: String,
+) -> HostResult<RemoteFormGeneratedDto> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| {
+            eprintln!("[host] resolving the application data directory: {error}");
+            HostError::new(
+                HostErrorKind::Persistence,
+                "This installation has no application data folder to write into.".to_owned(),
+            )
+        })?
+        .join(REMOTE_FORM_DIRECTORY);
+
+    state.generate_remote_form(&meeting_id, &participant_id, &directory)
 }
 
 /* -------------------------------------------------------------------------

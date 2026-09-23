@@ -7,8 +7,8 @@
  * - `host.ts`           - Host UI <-> Tauri command DTOs        (Phase 1, step 4)
  * - `lan.ts`            - LAN participant <-> HTTP DTOs         (Phase 1, step 6)
  * - `ws-events.ts`      - audience-scoped domain events         (Phase 1, step 7)
- * - `form-payload.ts`   - immutable metadata baked into a remote form
- * - `submission.v1.ts`  - remote submission schema, versioned
+ * - `form-payload.ts`   - immutable metadata baked into a remote form (step 9)
+ * - `submission.v1.ts`  - remote submission schema, versioned    (step 9)
  *
  * Each boundary gets its own file rather than one shared set of shapes. The Host
  * and a LAN participant are different audiences, and a type reused across both
@@ -21,11 +21,25 @@
  *
  * Nothing here may describe behaviour, only shape. Authorization, validation
  * and business rules live in the Rust backend.
+ *
+ * `submission.v1.ts` carries two small functions, which is the one exception
+ * and a deliberate one: the canonical byte form of a submission *is* part of
+ * its shape, and it is the one thing two languages must agree on exactly. It
+ * decides nothing about whether a submission may be imported.
  */
 
 export type * from './host';
 export type * from './lan';
 export type * from './ws-events';
+export type * from './form-payload';
+export type * from './submission.v1';
+
+// The remote participation contract (Phase 1, step 9). A value rather than a
+// type in each case: an element id both the Rust generator and the offline form
+// must spell identically, and the canonical serialisation both the Rust and the
+// TypeScript suites are held to by `__fixtures__/submissions.json`.
+export { SUBMISSION_CONTEXT_ELEMENT_ID } from './form-payload';
+export { CANONICAL_PREFIX, canonicalSubmission, normalizeNote } from './submission.v1';
 
 // Values rather than types: a subprotocol tag, two close codes and an event
 // name are strings both bundles must spell identically, and a string repeated

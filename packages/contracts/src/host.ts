@@ -37,6 +37,7 @@ import type {
   NoteId,
   ParticipantClaimStatus,
   ParticipantId,
+  SubmissionId,
 } from './index';
 
 /* -------------------------------------------------------------------------
@@ -526,6 +527,30 @@ export interface JoinTokenIssued {
   readonly qr: QrMatrix;
   readonly replaced_previous: boolean;
   readonly at: Iso8601Utc;
+}
+
+/**
+ * Where a generated remote form was written, and what identifies it.
+ *
+ * The Host sends the file at `path` to the participant however they like.
+ * Nothing in this application sends it anywhere (PRD section 10).
+ *
+ * `submission_id` is the artefact's identity: it makes re-importing the same
+ * file a detected duplicate, and it tells two forms generated for the same
+ * person apart (ADR-0021 decision 7).
+ */
+export interface RemoteFormGenerated {
+  readonly meeting_id: MeetingId;
+  readonly participant_id: ParticipantId;
+  readonly submission_id: SubmissionId;
+  /** Absolute path of the file the backend wrote. Chosen by the backend. */
+  readonly path: string;
+  /** Its name alone. A convenience, never an identity (rules section 21). */
+  readonly file_name: string;
+  readonly bytes: number;
+  /** The note version the form was generated from, or 0. Advisory. */
+  readonly source_version: number;
+  readonly generated_at: Iso8601Utc;
 }
 
 /** Outcome of a Host action on a participant's session. */

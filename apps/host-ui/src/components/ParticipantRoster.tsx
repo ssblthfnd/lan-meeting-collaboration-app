@@ -17,6 +17,7 @@ import * as hostApi from '../api/hostApi';
 import { useDomainEvents } from '../hooks/useDomainEvents';
 import { useQuery } from '../hooks/useQuery';
 import { ErrorNotice } from './ErrorNotice';
+import { RemoteFormPanel } from './RemoteFormPanel';
 
 /**
  * The participant roster (PRD section 7).
@@ -187,6 +188,13 @@ export function ParticipantRoster({
   const [draft, setDraft] = useState<ParticipantDetailsInput>(EMPTY);
   const [editing, setEditing] = useState<ParticipantId | null>(null);
   const [editValues, setEditValues] = useState<ParticipantDetailsInput>(EMPTY);
+  /**
+   * Whose remote form is being generated, if anyone's.
+   *
+   * One at a time, and opened from the row it belongs to, so the Host is never
+   * in doubt about which participant a generated file is for.
+   */
+  const [remoteFormFor, setRemoteFormFor] = useState<ParticipantId | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<HostError | null>(null);
 
@@ -311,6 +319,25 @@ export function ParticipantRoster({
                     </span>
                   </div>
                   <div className="actions">
+                    {/* Remote participation, which is not a roster edit: a
+                        participant who cannot reach the LAN still needs a way
+                        in after the meeting opens, which is exactly when this
+                        matters (PRD section 5.3). A locked meeting is refused
+                        by the backend, so the control goes away with it. */}
+                    {meeting.status !== 'LOCKED' && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() =>
+                          setRemoteFormFor((current) =>
+                            current === participant.id ? null : participant.id,
+                          )
+                        }
+                      >
+                        Remote form
+                      </button>
+                    )}
+
                     {editable && (
                       <>
                         <button
@@ -373,6 +400,14 @@ export function ParticipantRoster({
                     )}
                   </div>
                 </div>
+              )}
+
+              {remoteFormFor === participant.id && editing !== participant.id && (
+                <RemoteFormPanel
+                  meeting={meeting}
+                  participant={participant}
+                  onClose={() => setRemoteFormFor(null)}
+                />
               )}
             </li>
           ))}
