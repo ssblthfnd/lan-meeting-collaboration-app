@@ -56,6 +56,12 @@ pub enum AuditAction {
     NoteCreated,
     /// An existing note's content was replaced.
     NoteUpdated,
+    /// A remote submission was imported, replacing or creating a note.
+    ///
+    /// One record per successful import, targeting the note it produced. The
+    /// submission's own identity travels in the metadata, so the ledger and the
+    /// audit trail can be read against each other (ADR-0022 decision 14).
+    RemoteSubmissionImported,
 }
 
 impl AuditAction {
@@ -76,6 +82,7 @@ impl AuditAction {
             AuditAction::ParticipantSessionRevoked => "participant.session_revoked",
             AuditAction::NoteCreated => "note.created",
             AuditAction::NoteUpdated => "note.updated",
+            AuditAction::RemoteSubmissionImported => "remote_submission.imported",
         }
     }
 }
@@ -159,6 +166,10 @@ mod tests {
         );
         assert_eq!(AuditAction::NoteCreated.as_str(), "note.created");
         assert_eq!(AuditAction::NoteUpdated.as_str(), "note.updated");
+        assert_eq!(
+            AuditAction::RemoteSubmissionImported.as_str(),
+            "remote_submission.imported"
+        );
         assert_eq!(
             AuditAction::MeetingJoinTokenIssued.as_str(),
             "meeting.join_token_issued"

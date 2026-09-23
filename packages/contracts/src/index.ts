@@ -167,6 +167,15 @@ export type IsoTime = Branded<string, 'IsoTime'>;
  */
 export type IanaTimeZone = Branded<string, 'IanaTimeZone'>;
 
+/**
+ * The window event carrying a dropped submission's arrival.
+ *
+ * A value rather than a type: both Rust and the Host UI must spell it
+ * identically, and a string repeated across two languages is a typo waiting to
+ * become a runtime failure.
+ */
+export const REMOTE_SUBMISSION_PENDING = 'remote-submission-pending';
+
 /** Resolution recorded for a processed remote submission (ADR-0008). */
 export type SubmissionResolution =
   | 'IMPORTED'

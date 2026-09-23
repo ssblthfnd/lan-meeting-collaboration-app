@@ -83,7 +83,7 @@ pub use pool::Db;
 pub use presence::{ParticipantPresence, PresenceStore};
 pub use query::{
     AuditEntryView, HostQueries, MeetingDetail, MeetingSummary, NoteDetail, NoteOverview,
-    NoteVersionDetail, NoteVersionSummary, ParticipantSummary,
+    NoteVersionDetail, NoteVersionSummary, ParticipantSummary, SubmissionLedgerState,
 };
 pub use repository::DbTx;
 pub use session_store::{JoinTarget, SessionStore};

@@ -176,6 +176,9 @@ impl From<DomainError> for ApiError {
     /// the domain distinguishes them because the Host needs them distinguished,
     /// and a participant does not need - or get - the same resolution.
     fn from(error: DomainError) -> Self {
+        // Taken before the error is consumed, for the two arms that log.
+        let error_text = error.to_string();
+
         match error {
             DomainError::IdentityAlreadyClaimed { .. } => Self::identity_already_claimed(),
 
@@ -194,6 +197,21 @@ impl From<DomainError> for ApiError {
             DomainError::Unauthorized { .. } | DomainError::Forbidden { .. } => Self::forbidden(),
 
             DomainError::Validation { .. } => Self::invalid_request(),
+
+            // Remote import refusals, which a participant cannot provoke: there
+            // is no import route on this transport and there must never be one
+            // (ADR-0022). Reaching here means the application is wired wrong, so
+            // it is reported as a failure rather than dressed up as something
+            // the participant did - and the detail goes to the Host's console.
+            DomainError::DuplicateSubmission { .. }
+            | DomainError::ModifiedArtifact { .. }
+            | DomainError::CrossParticipantArtifact { .. } => {
+                diagnostic(
+                    "a remote import refusal reached the LAN transport, which has no import route",
+                    &error_text,
+                );
+                Self::internal()
+            }
 
             // The diagnostic stays on the Host machine, exactly as it does for
             // the Host's own error contract (ADR-0015).

@@ -27,6 +27,7 @@ history.
 | [0019](0019-note-editing-and-markdown-subset.md) | Note editing, the Markdown subset and safe rendering | Accepted |
 | [0020](0020-participant-note-editing.md) | Participant note editing over the LAN | Accepted |
 | [0021](0021-remote-form-generation.md) | Remote form generation and the submission artifact | Accepted |
+| [0022](0022-remote-submission-import.md) | Remote submission import | Accepted |
 
 Template:
 

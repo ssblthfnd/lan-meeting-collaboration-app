@@ -72,20 +72,21 @@ use app_core::error::DomainError;
 use app_core::event::{EventSink, NoEvents};
 use app_core::id::{MeetingId, ParticipantId, SubmissionId};
 use app_core::meeting::MeetingStatus;
-use app_core::service::{Domain, WriteNote};
+use app_core::service::{Domain, ImportSubmission, WriteNote};
 use app_core::time::UtcTimestamp;
 use app_db::presence::PresenceStore;
-use app_db::query::HostQueries;
+use app_db::query::{HostQueries, SubmissionLedgerState};
 use app_db::Db;
-use app_remote::RemoteFormContext;
+use app_remote::{RemoteFormContext, SubmissionV1};
 
 use crate::dto::{
-    AuditEntryDto, JoinTokenIssuedDto, LanInterfaceDto, MeetingConfigurationInput,
-    MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
-    MeetingUpdatedDto, NoteDetailDto, NoteOverviewDto, NoteVersionDetailDto, NoteVersionSummaryDto,
-    NoteWrittenDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
-    ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, RemoteFormGeneratedDto,
-    SessionChangedDto,
+    AuditEntryDto, ImportBlockerDto, JoinTokenIssuedDto, LanInterfaceDto,
+    MeetingConfigurationInput, MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto,
+    MeetingTransitionedDto, MeetingUpdatedDto, NoteDetailDto, NoteOverviewDto,
+    NoteVersionDetailDto, NoteVersionSummaryDto, NoteWrittenDto, ParticipantAddedDto,
+    ParticipantDetailsInput, ParticipantPresenceDto, ParticipantRemovedDto, ParticipantSummaryDto,
+    ParticipantUpdatedDto, RemoteFormGeneratedDto, RemoteSubmissionImportedDto,
+    RemoteSubmissionPreviewDto, SessionChangedDto,
 };
 use crate::error::{HostError, HostErrorKind, HostResult};
 
@@ -484,6 +485,238 @@ impl HostState {
             .notes_overview(meeting_id)
             .map_err(query_failed)?;
         Ok(rows.into_iter().map(NoteOverviewDto::from).collect())
+    }
+
+    /// Everything the Host should see before deciding whether to import.
+    ///
+    /// **Read-only.** Every query below runs on the read pool, whose connections
+    /// are opened `SQLITE_OPEN_READ_ONLY`, so a write down this path is refused
+    /// by SQLite rather than by discipline (ADR-0014).
+    ///
+    /// Nothing it concludes is authority. A meeting can be locked, a participant
+    /// removed, another submission imported and the note changed between this
+    /// and a confirmation; all of it is asked again inside the import
+    /// transaction, which is what decides (ADR-0022 decision 4).
+    ///
+    /// `raw` is the exact artefact the Host chose, held in Rust. The window does
+    /// not supply it and cannot substitute one.
+    pub fn preview_remote_submission(
+        &self,
+        meeting_id: &str,
+        raw: &str,
+        origin: &str,
+    ) -> HostResult<RemoteSubmissionPreviewDto> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+
+        // Parsing is the artefact's own business, and it refuses malformed
+        // JSON, an unknown schema version, a bad identifier and an oversized
+        // payload before anything is looked up.
+        let submission = SubmissionV1::parse(raw)?;
+        let content_hash = app_remote::content_hash(&submission);
+
+        let queries = self.queries();
+        let meeting = queries
+            .meeting(meeting_id)
+            .map_err(query_failed)?
+            .ok_or_else(|| not_found(meeting_id))?;
+
+        // The Host selected the meeting; the file only agrees or does not.
+        let meeting_matches = submission.meeting_id == meeting_id;
+
+        // Resolved against the **selected** meeting. A participant belongs to
+        // exactly one meeting, so this is also what makes a cross-meeting
+        // artefact unresolvable rather than merely refused.
+        let participant = if meeting_matches {
+            queries
+                .participants(meeting_id)
+                .map_err(query_failed)?
+                .into_iter()
+                .find(|row| row.id == submission.participant_id)
+        } else {
+            None
+        };
+
+        let note = match &participant {
+            Some(row) => queries.note(meeting_id, row.id).map_err(query_failed)?,
+            None => None,
+        };
+
+        let ledger = match &participant {
+            Some(row) => queries
+                .remote_submission_state(
+                    meeting_id,
+                    row.id,
+                    submission.submission_id,
+                    &content_hash,
+                )
+                .map_err(query_failed)?,
+            None => SubmissionLedgerState::New,
+        };
+
+        // The same rules the domain runs, asked read-only so the Host is told
+        // before they confirm rather than after they are refused.
+        let content_problem = app_core::note::inspect(&submission.note).map(|p| p.as_str());
+
+        let blocker = if !meeting_matches {
+            Some(ImportBlockerDto::MeetingMismatch)
+        } else if participant.is_none() {
+            Some(ImportBlockerDto::ParticipantNotFound)
+        } else if meeting.status == MeetingStatus::Locked {
+            Some(ImportBlockerDto::MeetingLocked)
+        } else {
+            match ledger {
+                SubmissionLedgerState::Duplicate { .. } => Some(ImportBlockerDto::Duplicate),
+                SubmissionLedgerState::ModifiedArtifact { .. } => {
+                    Some(ImportBlockerDto::ModifiedArtifact)
+                }
+                SubmissionLedgerState::CrossParticipant { .. } => {
+                    Some(ImportBlockerDto::CrossParticipantArtifact)
+                }
+                SubmissionLedgerState::New => {
+                    content_problem.map(|_| ImportBlockerDto::InvalidContent)
+                }
+            }
+        };
+
+        let current_version = note.as_ref().map(|row| row.version);
+
+        Ok(RemoteSubmissionPreviewDto {
+            origin: origin.to_owned(),
+
+            meeting_id,
+            meeting_title: meeting.title.clone(),
+            meeting_status: meeting.status.as_str(),
+            submission_meeting_id: submission.meeting_id,
+            meeting_matches,
+
+            participant_id: participant.as_ref().map(|row| row.id),
+            participant_name: participant.as_ref().map(|row| row.details.name.clone()),
+            participant_name_matches: participant
+                .as_ref()
+                .is_some_and(|row| row.details.name == submission.participant_name),
+            submission_participant_name: submission.participant_name.clone(),
+
+            source_version: submission.source_version,
+            current_version,
+            // A form generated from a version the note has since passed. Not an
+            // error, and never a block (ADR-0022 decision 10).
+            is_stale: current_version.is_some_and(|current| current > submission.source_version),
+            submitted_note: submission.note.clone(),
+            current_note: note.map(|row| row.content),
+
+            submission_id: submission.submission_id,
+            content_hash,
+            duplicate_state: match ledger {
+                SubmissionLedgerState::New => "new",
+                SubmissionLedgerState::Duplicate { .. } => "duplicate",
+                SubmissionLedgerState::ModifiedArtifact { .. } => "modified_artifact",
+                SubmissionLedgerState::CrossParticipant { .. } => "cross_participant",
+            },
+            duplicate_participant_id: match ledger {
+                SubmissionLedgerState::CrossParticipant { participant_id } => Some(participant_id),
+                _ => None,
+            },
+            duplicate_note_version: match ledger {
+                SubmissionLedgerState::Duplicate { note_version }
+                | SubmissionLedgerState::ModifiedArtifact { note_version } => Some(note_version),
+                _ => None,
+            },
+
+            generated_at: submission.generated_at.clone(),
+            submitted_at: submission.submitted_at.clone(),
+
+            eligible: blocker.is_none(),
+            blocker,
+            content_problem,
+        })
+    }
+
+    /// Import the pending submission, as the Host has confirmed it.
+    ///
+    /// Everything the preview established is established again here, because
+    /// the preview may be stale by now. What this method does *not* do is
+    /// decide: the lock, the actor's authority, the participant's membership,
+    /// the content rules and the artefact's identity are all re-read inside the
+    /// domain's own transaction (architecture rules section 15).
+    ///
+    /// Two checks do happen here, and only one of them is a decision:
+    ///
+    /// - the submission is **parsed**, because the domain takes a note and not
+    ///   a file;
+    /// - the submission's meeting must equal the **Host-selected** meeting,
+    ///   because the file must never choose its destination (ADR-0022 d1).
+    ///
+    /// The participant is then resolved against that meeting, and only then -
+    /// from the row the database returned, never from the file - is
+    /// [`Actor::RemoteImport`] constructed (ADR-0022 decision 3).
+    pub fn import_remote_submission(
+        &self,
+        meeting_id: &str,
+        raw: &str,
+    ) -> HostResult<RemoteSubmissionImportedDto> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let submission = SubmissionV1::parse(raw)?;
+
+        // The Host chose the meeting. A file naming another one is refused
+        // before anything is resolved, and long before an actor exists.
+        if submission.meeting_id != meeting_id {
+            return Err(HostError::from(app_remote::RemoteError::MeetingMismatch));
+        }
+
+        // Resolved, not believed. The id in the file is a candidate.
+        let participant = self
+            .queries()
+            .participants(meeting_id)
+            .map_err(query_failed)?
+            .into_iter()
+            .find(|row| row.id == submission.participant_id)
+            .ok_or_else(|| {
+                HostError::from(DomainError::ParticipantNotFound {
+                    meeting_id,
+                    participant_id: submission.participant_id,
+                })
+            })?;
+
+        // Built from the rows the database returned. `authorize` refuses a
+        // target that is not the actor's own regardless, inside the
+        // transaction, which is what makes a mistake here a refusal.
+        let actor = Actor::RemoteImport {
+            meeting_id,
+            participant_id: participant.id,
+        };
+
+        // Computed from the parsed submission, never read out of the file.
+        let content_hash = app_remote::content_hash(&submission);
+        // The canonical pass already normalised line endings; the note is stored
+        // exactly as the canonical form hashed it, so the two cannot disagree.
+        let content = app_remote::normalize_note(&submission.note);
+
+        let outcome = self.domain.import_remote_submission(
+            &actor,
+            ImportSubmission {
+                meeting_id,
+                participant_id: participant.id,
+                submission_id: submission.submission_id,
+                content_hash,
+                content,
+                // The exact bytes the Host chose. Never a re-serialisation
+                // (ADR-0022 decision 15).
+                raw_payload: raw.to_owned(),
+                source_version: submission.source_version,
+            },
+        )?;
+
+        Ok(RemoteSubmissionImportedDto {
+            meeting_id,
+            participant_id: participant.id,
+            // The roster's own name, not the one the file claimed.
+            participant_name: participant.details.name,
+            submission_id: submission.submission_id,
+            note_id: outcome.note_id,
+            version: outcome.version,
+            resolution: outcome.resolution.as_str(),
+            at: outcome.at,
+        })
     }
 
     /// Who is connected, and when each identity was last seen.

@@ -56,7 +56,7 @@ pub use context::{RemoteFormContext, SCHEMA_VERSION};
 pub use generate::{
     generate, is_bundled, verify_artifact, CONTEXT_ELEMENT_ID, FORBIDDEN_IN_ARTIFACT,
 };
-pub use submission::SubmissionV1;
+pub use submission::{SubmissionV1, MAX_SUBMISSION_BYTES};
 
 use thiserror::Error;
 
@@ -79,6 +79,14 @@ pub enum RemoteError {
         "unsupported submission schema: expected version {expected}, detected version {detected}"
     )]
     UnsupportedSchema { expected: u32, detected: u64 },
+
+    /// The artefact is larger than a submission is allowed to be.
+    ///
+    /// Checked before a file is read whole, so nothing reads an arbitrary number
+    /// of bytes into memory, and checked again on what was read, so a file that
+    /// grows mid-operation cannot get past the bound (ADR-0022 decision 16).
+    #[error("submission too large: expected at most {limit} bytes, detected {detected} bytes")]
+    TooLarge { limit: usize, detected: u64 },
 
     /// An identifier in the submission is not a canonical UUIDv7.
     ///

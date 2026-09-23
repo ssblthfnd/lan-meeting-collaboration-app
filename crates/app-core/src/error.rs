@@ -13,7 +13,7 @@
 
 use thiserror::Error;
 
-use crate::id::{MeetingId, ParticipantId};
+use crate::id::{MeetingId, ParticipantId, SubmissionId};
 use crate::meeting::MeetingStatus;
 
 pub type DomainResult<T> = Result<T, DomainError>;
@@ -122,6 +122,50 @@ pub enum DomainError {
         field: &'static str,
         expected: &'static str,
         detected: String,
+    },
+
+    /// This exact artefact has already been imported (ADR-0022 decision 6).
+    ///
+    /// The same `submission_id` carrying the same canonical content. Import is
+    /// idempotent: the note already says what this file says, so there is
+    /// nothing to do and a second version would be a lie about history.
+    ///
+    /// Carries the version the earlier import produced, because the useful next
+    /// thing to tell a Host is *which* version they already have.
+    #[error(
+        "submission {submission_id} was already imported for this participant as note version {note_version}"
+    )]
+    DuplicateSubmission {
+        submission_id: SubmissionId,
+        note_version: i64,
+    },
+
+    /// A known artefact whose content no longer matches (ADR-0022 decision 6).
+    ///
+    /// The same `submission_id` with a different canonical hash. An artefact's
+    /// content is fixed the moment the participant exports it, so this is a file
+    /// that does not match the one thing the Host can check.
+    ///
+    /// **Not a correction.** A correction is a newly generated form, which
+    /// carries a new `submission_id`.
+    #[error(
+        "submission {submission_id} was already imported with different content: expected the artefact this application generated, detected an altered one"
+    )]
+    ModifiedArtifact { submission_id: SubmissionId },
+
+    /// A known artefact reappearing under a different participant (ADR-0022 d6).
+    ///
+    /// A generated form belongs to exactly one participant. Seeing its
+    /// `submission_id` under another is evidence the file was edited - and the
+    /// per-participant duplicate check cannot catch it, because changing
+    /// `participant_id` changes the canonical hash.
+    #[error(
+        "submission {submission_id} belongs to another participant in this meeting: expected {expected}, detected {detected}"
+    )]
+    CrossParticipantArtifact {
+        submission_id: SubmissionId,
+        expected: ParticipantId,
+        detected: ParticipantId,
     },
 
     /// A concurrent mutation won a race this one cannot recover from.

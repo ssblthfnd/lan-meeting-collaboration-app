@@ -18,7 +18,9 @@ use crate::audit::AuditEntry;
 use crate::authz::Authorized;
 use crate::error::DomainResult;
 use crate::id::SessionId;
-use crate::id::{MeetingId, NoteId, NoteVersionId, ParticipantId};
+use crate::id::{
+    MeetingId, NoteId, NoteVersionId, ParticipantId, RemoteSubmissionId, SubmissionId,
+};
 use crate::meeting::{Meeting, MeetingConfiguration, MeetingStatus};
 use crate::participant::ParticipantDetails;
 use crate::session::SessionBinding;
@@ -107,6 +109,68 @@ pub struct NewNoteVersion {
     pub at: UtcTimestamp,
 }
 
+/// What a remote submission did to a note, as the ledger records it.
+///
+/// A description of an outcome, not a mode anyone chose: there is no Host
+/// "replace" action for remote submissions (ADR-0022 decision 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmissionResolution {
+    /// The participant had no note; this import created it at version 1.
+    Imported,
+    /// The participant had a note; this import replaced its content.
+    Replaced,
+}
+
+impl SubmissionResolution {
+    /// The persisted `remote_submissions.resolution` value.
+    ///
+    /// The column's `CHECK` accepts four words; the MVP writes these two.
+    /// `REJECTED_DUPLICATE` and `REJECTED_INVALID` stay unused, because a
+    /// refusal writes nothing at all (ADR-0022 decision 7).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SubmissionResolution::Imported => "IMPORTED",
+            SubmissionResolution::Replaced => "REPLACED",
+        }
+    }
+}
+
+/// A row of the remote submission ledger, as stored.
+///
+/// Read inside the mutating transaction to decide whether an artefact has been
+/// seen before. The `participant_id` is carried because the cross-participant
+/// lookup finds rows belonging to somebody else (ADR-0022 decision 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmissionRecord {
+    pub participant_id: ParticipantId,
+    /// SHA-256 over the canonical form, lowercase hex.
+    pub content_hash: String,
+    /// The note version this submission produced.
+    pub note_version: i64,
+}
+
+/// A ledger row that does not exist yet.
+///
+/// Carries no meeting id on purpose: the adapter takes it from the
+/// [`Authorized`] passed alongside, so a ledger row cannot be written against a
+/// meeting the actor was not authorized for.
+///
+/// `raw_payload` is the **exact submitted bytes**, not a re-serialisation: the
+/// column exists to keep the external input verbatim for forensics, and
+/// canonical bytes exist only to be hashed (ADR-0022 decision 15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewRemoteSubmission {
+    pub id: RemoteSubmissionId,
+    pub participant_id: ParticipantId,
+    pub submission_id: SubmissionId,
+    pub content_hash: String,
+    pub resolution: SubmissionResolution,
+    pub note_version: i64,
+    pub raw_payload: String,
+    pub at: UtcTimestamp,
+}
+
 /// Everything the domain can do to the database within one transaction.
 ///
 /// Implementations contain persistence mechanics only. They must not decide
@@ -164,6 +228,36 @@ pub trait DomainTx {
     /// state. The database additionally holds `UNIQUE(note_id, version)`, so a
     /// lost race cannot produce two rows with the same number.
     fn latest_note_version(&self, note_id: NoteId) -> DomainResult<i64>;
+
+    /// The ledger row for this artefact and participant, if it has been seen.
+    ///
+    /// Read inside the mutating transaction, so a concurrent import cannot slip
+    /// between the check and the write. Same `submission_id` with the same hash
+    /// is a duplicate; with a different hash it is a modified artefact
+    /// (ADR-0022 decision 6).
+    fn find_remote_submission(
+        &self,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+        submission_id: SubmissionId,
+    ) -> DomainResult<Option<SubmissionRecord>>;
+
+    /// A ledger row for this artefact under **any other** participant.
+    ///
+    /// A generated form belongs to one participant, so seeing its
+    /// `submission_id` under another is evidence the file was edited. The
+    /// per-participant lookup above cannot catch it: changing `participant_id`
+    /// changes the canonical hash, so the pair never matches.
+    ///
+    /// Scoped to the meeting, which is all the confinement it needs - a
+    /// participant belongs to exactly one meeting, and the composite foreign key
+    /// enforces that.
+    fn find_foreign_remote_submission(
+        &self,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+        submission_id: SubmissionId,
+    ) -> DomainResult<Option<SubmissionRecord>>;
 
     /// Insert a new meeting.
     fn insert_meeting(&self, proof: &Authorized, meeting: &NewMeeting) -> DomainResult<()>;
@@ -261,6 +355,19 @@ pub trait DomainTx {
     /// Append a row to a note's history.
     fn insert_note_version(&self, proof: &Authorized, version: &NewNoteVersion)
         -> DomainResult<()>;
+
+    /// Record a processed remote submission in the idempotency ledger.
+    ///
+    /// Written in the same transaction as the note, its version and the audit
+    /// entry, so an imported note without a ledger row - idempotency quietly
+    /// broken - is not representable (ADR-0022 decision 5).
+    ///
+    /// Only successful imports are recorded. A refusal writes nothing.
+    fn insert_remote_submission(
+        &self,
+        proof: &Authorized,
+        submission: &NewRemoteSubmission,
+    ) -> DomainResult<()>;
 
     /// Append an audit record, attributed to the actor in `proof`.
     fn insert_audit(&self, proof: &Authorized, entry: &AuditEntry) -> DomainResult<()>;

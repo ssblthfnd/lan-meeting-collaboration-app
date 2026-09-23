@@ -5,6 +5,7 @@ import * as hostApi from '../api/hostApi';
 import { useQuery } from '../hooks/useQuery';
 import { AuditLog } from './AuditLog';
 import { ErrorNotice } from './ErrorNotice';
+import { ImportSubmissionPanel } from './ImportSubmissionPanel';
 import { JoinPanel } from './JoinPanel';
 import { MeetingForm } from './MeetingForm';
 import { NotesPanel } from './NotesPanel';
@@ -18,7 +19,7 @@ import { StatusBadge, statusDescription } from './StatusBadge';
  * decides for itself. Everything else it shows comes from the backend, and every
  * action it offers is re-judged there.
  */
-type Section = 'configuration' | 'participants' | 'access' | 'notes' | 'audit';
+type Section = 'configuration' | 'participants' | 'access' | 'notes' | 'remote' | 'audit';
 
 export function MeetingDetailView({
   meetingId,
@@ -108,7 +109,9 @@ export function MeetingDetailView({
       {error && <ErrorNotice error={error} />}
 
       <nav className="tabs">
-        {(['configuration', 'participants', 'access', 'notes', 'audit'] as const).map((name) => (
+        {(
+          ['configuration', 'participants', 'access', 'notes', 'remote', 'audit'] as const
+        ).map((name) => (
           <button
             key={name}
             type="button"
@@ -119,6 +122,7 @@ export function MeetingDetailView({
             {name === 'participants' && `Participants (${detail.participant_count})`}
             {name === 'access' && 'LAN access'}
             {name === 'notes' && 'Notes'}
+            {name === 'remote' && 'Remote'}
             {name === 'audit' && 'Audit'}
           </button>
         ))}
@@ -235,6 +239,13 @@ export function MeetingDetailView({
       {section === 'access' && <JoinPanel meeting={detail} />}
 
       {section === 'notes' && <NotesPanel meeting={detail} />}
+
+      {/* Remote participation is meeting-scoped: a form is generated for one
+          participant, but a submission is read back into this meeting. Import
+          therefore lives here rather than on a roster row (ADR-0022). */}
+      {section === 'remote' && (
+        <ImportSubmissionPanel meeting={detail} onImported={refresh} />
+      )}
 
       {section === 'audit' && <AuditLog meetingId={meetingId} />}
     </>

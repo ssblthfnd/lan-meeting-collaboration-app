@@ -110,8 +110,8 @@ These apply to every step in this file.
 | Step 7 | Realtime updates & participant presence | COMPLETE | `f5e1b1f` |
 | Step 8 | Host note editing & version history | COMPLETE | `27349ec` |
 | Step 8B | Participant note editing over LAN | COMPLETE | `120a9c5` |
-| Step 9 | Remote form generation | COMPLETE | uncommitted |
-| Step 10 | Remote submission import pipeline | **NEXT** (partly frozen) | — |
+| Step 9 | Remote form generation | COMPLETE | `e867bdc` |
+| Step 10 | Remote submission import pipeline | COMPLETE | uncommitted |
 | Step 11 | Meeting lock | PLANNED | — |
 | Step 12 | Export: Markdown and TXT / AI Context | PLANNED | — |
 
@@ -1108,7 +1108,7 @@ model, the DTOs and the participant-side surface.
 
 ## Step 9 — Remote Form Generation
 
-**Status: COMPLETE** (implemented, uncommitted at the time of writing)
+**Status: COMPLETE** (`e867bdc`)
 
 From `README.md` roadmap item 9, PRD sections 10, 11 and 20, and architecture
 rules sections 6, 7, 8 and 20. The accepted decision record is
@@ -1580,56 +1580,402 @@ Step 10.
 
 ## Step 10 — Remote Submission Import Pipeline
 
-**Status: PLANNED — partly frozen in advance**
+**Status: COMPLETE** (implemented, uncommitted at the time of writing)
+
+Everything below is the approved design, and it was implemented as written:
+D2, D5, D9, D11, D12, D13, D14 and O-1 through O-7 all stand unchanged, the
+migrations were not touched, and no capability or plugin was added. Four points
+are worth recording because they were settled during implementation:
+
+- **The shared helper landed as two private functions** in `app-core::service`:
+  a gate (`authorize_note_write`) and a write (`apply_note_write`).
+  `Domain::write_note` was refactored onto both, so the authorization sequence,
+  lock enforcement, content validation, the note upsert and version derivation
+  exist in exactly one implementation. An import runs its artefact-identity
+  lookups between the two, which is what keeps the gate's decisions ahead of
+  them. Audit stays with each caller, so an import records
+  `remote_submission.imported` rather than `note.updated`.
+- **`DomainError` gained three variants, not two.** The cross-participant rule
+  needed its own: `CrossParticipantArtifact` carries the participant the
+  artefact was first imported for, which is what makes the refusal actionable.
+- **`app-db` does not depend on `app-remote`.** The domain treats
+  `content_hash` as an opaque 64-character string, so the database tests use a
+  deterministic stand-in with the one property that matters - it changes when
+  the participant changes. The real canonical hash is exercised where it
+  belongs: by the shared fixtures, and end to end by the Tauri suite.
+- **The LAN error contract gained an arm.** `app-server` must match
+  `DomainError` exhaustively, and the three import refusals cannot be provoked
+  from the LAN - there is no import route. They map to an internal failure with
+  a diagnostic, because reaching one there would mean the application is wired
+  wrong.
 
 From `README.md` roadmap item 10, PRD sections 11 and 12, and architecture rules
-sections 9, 10, 11 and 12.
+sections 9, 10, 11 and 12. The accepted decision record is
+`docs/adr/0022-remote-submission-import.md`.
 
-Intended scope: parse, validate and import a submission file as **untrusted
-input**, in a single transaction, with duplicate detection backed by the
-existing `remote_submissions` table. Import updates the participant's single
-note and appends a version; it never creates a second note (ADR-0003).
+Scope: parse, validate and import a submission file as **untrusted input**, in a
+single transaction, with duplicate detection backed by the existing
+`remote_submissions` table. Import updates the participant's single note and
+appends a version; it never creates a second note (ADR-0003).
 
-### Frozen during the Step 9 design freeze
+A read-only design inspection of the repository at `e867bdc` preceded this
+freeze. No contradiction with the authoritative architecture was found during
+implementation.
 
-These were settled alongside Step 9 because they are properties of the artifact
-or of decisions Step 9 depends on. They are **not** open for redesign when Step
-10 is reached:
+### What the inspection verified at `e867bdc`
 
-- **D2** — the lifecycle rule is `Meeting::ensure_mutable()`: DRAFT and OPEN
-  permitted, LOCKED rejected inside the mutating transaction. No
-  transport-specific rule.
-- **D5** — rejected submissions are reported and **not persisted**. No second
-  rejection-write transaction. `REJECTED_DUPLICATE` and `REJECTED_INVALID` stay
-  unused in the MVP. A successful import writes the ledger row atomically with
-  the note, the version and the audit entry.
-- **D9** — `source_version` is advisory, displayed in the preview, never a
-  precondition, and gets no database column.
-- **D11** — artifact identity and duplicate semantics: same id and same hash is
-  a refused duplicate; same id and a different hash is a **refused modified
-  artifact**, not a correction; a different id is a distinct artifact.
-  Corrections go through regeneration.
-- **D12** — the canonical hash, its five steps, and its hashed and excluded
-  fields.
-- **D13** — no signing, and the trust boundary is database resolution plus Host
-  preview and confirmation plus `app-core` authorization.
-- **D14** — `Actor::RemoteImport` is constructed **only** in `src-tauri`, from
-  the Host-selected meeting and the database-resolved participant, after
-  validation and after confirmation. `crates/app-remote` must never construct
-  it.
+Three problems that looked hard were already solved, and knowing that prevents
+rebuilding them:
 
-### Still to be designed
+- **File import needs no capability change.** `core:default` resolves to
+  `core:event:default`, which grants `allow-listen`; `dragDropEnabled` is on by
+  Tauri's default and is not disabled in `tauri.conf.json`; and a Rust-side
+  drag-drop handler needs no permission at all, because the ACL governs what the
+  *renderer* may reach over IPC.
+- **Cross-meeting import is structurally impossible.** `participants.id` is a
+  global `PRIMARY KEY`, so a participant id belongs to exactly one meeting. The
+  composite foreign key on `remote_submissions` is a second backstop.
+- **Import attribution is automatic.** `DomainTx::insert_note_version` and
+  `insert_audit` already take `actor_type` and `actor_id` from the authorization
+  proof, so an `Actor::RemoteImport` proof writes correct `REMOTE_IMPORT`
+  history and audit rows with **no change to either method**.
 
-Validation ordering and its error contract; the Host preview and confirmation
-surface; the `app-core` port additions and the import transaction; how the
-ledger row, the note version and the audit entry are written together; the
-`IMPORTED` versus `REPLACED` mapping; the import test matrix; and how the Host
-receives a file at all, given D10's refusal to add a filesystem or dialog plugin
-(investigate Tauri's core drag-and-drop path delivery first, and fall back to
-pasting the submission JSON).
+Also verified: `Db::write_with` opens `BEGIN IMMEDIATE`, commits on `Ok` and
+drops the transaction on `Err`, behind a single writer `Mutex` - which is the
+atomicity and serialisation mechanism this step needs, already built. `authz.rs`
+has granted `Actor::RemoteImport` exactly `WriteNote { participant_id }` for its
+own participant since step 2, with four tests. Step 9 already shipped
+`SubmissionV1::parse`, `canonical_form` and `content_hash`, fixture-locked
+across both languages.
 
-Step 10 gets its own ADR. Everything above that is frozen is recorded in
-ADR-0021, which that ADR will reference rather than restate.
+### Frozen decisions
+
+D2, D5, D9, D11, D12, D13 and D14 were frozen during the Step 9 design freeze and
+were re-verified against source at `e867bdc` with **no contradiction found**.
+O-1 through O-7 were resolved at this freeze.
+
+| # | Decision | Outcome |
+| --- | --- | --- |
+| D2 | Lifecycle rule | **`ensure_mutable()`** — DRAFT and OPEN permitted, LOCKED rejected, re-read inside the transaction |
+| D5 | Persist rejected submissions | **NO** — a refusal writes nothing at all |
+| D9 | `source_version` | **ADVISORY** — never blocks, no column, last-write-wins |
+| D11 | Submission identity | **FROZEN**, and widened by O-1 |
+| D12 | Canonical hash | **REUSE** Step 9's `app_remote::content_hash`; no second algorithm |
+| D13 | Signing | **NONE** |
+| D14 | `Actor::RemoteImport` construction | **`src-tauri` only**, from database-resolved rows |
+| O-1 | Cross-participant artefact detection | **APPROVED** — enforced in the domain transaction |
+| O-2 | File delivery | **Tauri core drag/drop**, path held in Rust, no plugin |
+| O-3 | Host UI placement | **Meeting-level**, dedicated `ImportSubmissionPanel.tsx` |
+| O-4 | Error model | **Explicit domain errors** for duplicate and modified artefact |
+| O-5 | PRD reconciliation | **Recorded, not edited** — see below |
+| O-6 | Import size limit | **256 KiB**, checked before and after the read |
+| O-7 | Preview → confirm carrier | **Rust-held pending import state** |
+
+### O-1 — submission identity, widened
+
+Given a submission for the Host-selected meeting:
+
+| Condition | Verdict |
+| --- | --- |
+| `(meeting, participant, submission_id)` seen, same `content_hash` | **DUPLICATE** — reject |
+| `(meeting, participant, submission_id)` seen, different `content_hash` | **MODIFIED_ARTIFACT** — reject |
+| `(meeting, submission_id)` seen under a **different** participant | **CROSS_PARTICIPANT_ARTIFACT** — reject |
+| different `submission_id` | **NEW** — import |
+
+All three checks run **inside the domain transaction**, not only in the preview
+or the UI. A check that lives only in a preview is a race.
+
+The third row extends the earlier D11 interpretation, which keyed detection per
+participant: an artefact whose `participant_id` was edited produces a different
+canonical hash — `participant_id` is a hashed field — so it would have missed the
+per-participant lookup entirely.
+
+**None of these is a correction mechanism.** A correction is a newly generated
+remote form, which carries a new `submission_id` and imports as NEW. There is no
+Host "replace" action for remote submissions in this step.
+
+`UNIQUE(meeting_id, participant_id, submission_id, content_hash)` remains the
+backstop for a race the lookups cannot see; violating it is reported as a
+duplicate, not as a failure.
+
+### O-2 — the file arrives by drag and drop
+
+Tauri's core drag-drop delivers the dropped path to **Rust**, which keeps it in a
+small Tauri-managed pending-import state. The renderer is told a file is waiting
+and calls preview with a meeting id and **no path**. A renderer that cannot name
+a path cannot read an arbitrary file — the same principle Step 9 applied to
+writing.
+
+The handler delegates to a separately testable function rather than holding logic
+inside `run()`, which no integration test can execute.
+
+A paste-JSON field is the fallback, feeding the same pipeline with no filesystem
+involved.
+
+**No `tauri-plugin-fs`, no `tauri-plugin-dialog`, no capability change.**
+
+### O-3 — Host UI placement
+
+Import is **meeting-scoped**, so the surface is meeting-level, not a participant
+roster row. A dedicated `ImportSubmissionPanel.tsx` is mounted from
+`MeetingDetailView.tsx`, which is touched only as far as mounting requires.
+
+No roster redesign. No bulk import. No import history UI.
+
+### O-4 — error model
+
+`DomainError` gains `DuplicateSubmission` and `ModifiedArtifact` (and the
+cross-participant case). They are determined **inside the atomic transaction**,
+which is why they are domain errors rather than `RemoteError` variants: moving
+them out would mean checking outside the transaction, which is a race.
+
+A generic SQLite conflict is **not** the primary API; it remains the backstop.
+Transport and UI expose stable error kinds and leak no raw database diagnostics.
+
+### O-5 — PRD reconciliation, recorded not applied
+
+Frozen MVP behaviour: NEW imports; same id + same hash rejects as duplicate; same
+id + different hash rejects as modified artefact; same id under another
+participant rejects as cross-participant artefact. **No replace, no correction.**
+
+The following existing wording is formally inconsistent with that and is
+**flagged for a future documentation reconciliation, not rewritten**:
+
+- `PRD-LAN-Meeting-Collaboration-App.md` line **421** — *"Host tetap mengontrol
+  keputusan duplicate (tolak / gantikan / jadikan versi baru) sebelum persist."*
+- `PRD-LAN-Meeting-Collaboration-App.md` line **429** — *"Host mendapat
+  informasi yang cukup untuk memilih tolak / gantikan / versi baru."*
+- `PRD` line **428** — *"mengimpor versi koreksi dari participant yang sama dapat
+  dibedakan dari file yang sama persis"* (the distinction still holds; what
+  changed is that the correction is refused rather than imported).
+- `Architecture-Engineering-Rules-…md` lines **342-344** — the *ditolak /
+  menggantikan versi sebelumnya / dibuat sebagai versi baru* choice.
+- `Architecture-Engineering-Rules-…md` line **351** — *"`submission_id` sama
+  tetapi `content_hash` berbeda → koreksi dari participant yang sama"*.
+
+ADR-0022 records the supersession. Neither document is edited during this freeze.
+
+### O-6 — size limits
+
+| Limit | Where | Value |
+| --- | --- | --- |
+| complete submission JSON | `src-tauri`, at read time | **256 KiB** |
+| note content | `app-core::note`, in the transaction | 64 KiB, unchanged and authoritative |
+| `raw_payload` | bounded by the file limit | **no database constraint** |
+
+Checked **before** the file is read and again on the result, so a file that
+changes size mid-operation cannot bypass the bound. Nothing reads a file of
+unknown size into memory. Filenames are never parsed and never used as identity.
+
+### O-7 — preview and confirmation
+
+**Preview is read-only** and runs entirely on the read-only connection pool,
+which is opened `SQLITE_OPEN_READ_ONLY` — a write through it is refused by SQLite
+rather than by discipline.
+
+**Confirmation repeats every security-critical check against current state.**
+Between the two a meeting can be locked, a participant removed, another
+submission imported or the note changed. The preview's eligibility, resolved ids,
+hash and duplicate verdict are **advisory display** and none is carried into the
+write as authority.
+
+The bounded artefact bytes stay in the Rust-side pending state; the renderer
+never sends the artefact back as the authority for confirmation.
+
+### The transaction — six invariants
+
+```text
+BEGIN IMMEDIATE
+  load meeting
+  authorize the RemoteImport actor     -- inherited from the step 8 note write
+  ensure_mutable                       -- the lock, re-read here
+  validate the note content
+  resolve the participant in this meeting
+  check submission identity            -- duplicate / modified / cross-participant
+  apply the note write                 -- upsert + version, shared with write_note
+  insert remote_submissions
+  insert audit_logs
+COMMIT
+  publish note.changed
+```
+
+1. the lock is checked inside the transaction;
+2. actor authorization is checked inside the transaction;
+3. participant confinement is checked inside the transaction;
+4. duplicate / artefact identity is checked inside the transaction;
+5. note, version, ledger row and audit entry commit atomically;
+6. the event is emitted only after the commit.
+
+**Authorization precedes the lock, and that is not a step 10 decision.** It is
+the sequence `Domain::write_note` has shipped with since step 8, and the shared
+gate below preserves it rather than reopening it: `app-server` maps `Forbidden`
+and `MeetingLocked` onto different answers, so swapping the two would change what
+an unauthorized LAN participant learns about a locked meeting. This line is
+documentation alignment with already-shipped behaviour, not a new runtime
+decision. ADR-0022 decision 5 records the same thing.
+
+Nothing import depends on is affected. Lifecycle enforcement still happens
+**inside the same transaction**, before any note mutation and before any
+submission-identity decision.
+
+**Submission identity is checked only after the security and lifecycle gate.**
+A locked meeting must be refused *as locked* even when the file offered is also a
+duplicate or a modified artefact, and an actor with no standing must be refused
+*as unauthorized* even when the artefact it carries is one this application has
+already seen. Artefact identity is never an authorization shortcut and never a
+lifecycle one.
+
+**`Domain::write_note` must not be called as a separate transaction.** The
+accepted structure is **private in-transaction helpers extracted from
+`write_note`**, preserving the existing step 8 sequence exactly, with
+`write_note` and `import_remote_submission` as their two callers:
+
+| Helper | Owns |
+| --- | --- |
+| the gate | meeting load, authorization, the lock, content validation, membership - and returns the authorization proof |
+| the write | the upsert, the version derivation, the `note_versions` row |
+
+An import runs its identity lookups *between* the two. The ledger row is
+inserted with the same proof, so `proof.meeting_id()` scopes it.
+
+The authorization sequence, note-version derivation and lock semantics must
+exist in **one** implementation.
+
+### Frozen behaviour for the awkward cases
+
+| Situation | Behaviour |
+| --- | --- |
+| participant id exists, name differs | **warning**; import permitted; the database name wins |
+| participant id does not exist | **hard error** |
+| participant belongs to another meeting | **hard error**; also structurally impossible |
+| submission meeting differs from the Host's selection | **hard error**, before confirmation |
+| displayed meeting metadata differs from the database | **warning**; nothing from the file is stored |
+| `source_version` stale | **not an error** — imports as a new version |
+| timestamps malformed or implausible | **not an error** — display only, excluded from the hash |
+| participant removed from the roster | **hard error** |
+| LAN session revoked, still on the roster | **imports normally** — revocation governs LAN access, and remote participation is session-less |
+
+### Ledger, audit and events
+
+`resolution` is `IMPORTED` when the note was created and `REPLACED` when its
+content was replaced. No third value.
+
+`raw_payload` stores the **exact submitted JSON, verbatim** — not a
+re-serialisation. Canonical bytes exist only to be hashed. The HTML artefact is
+never stored.
+
+One audit row per successful import: `remote_submission.imported`, target
+`Note`, with `participant_id`, `submission_id`, `content_hash`, `source_version`,
+`note_version` and `resolution` in metadata. `actor_type`, `actor_id` and
+`meeting_id` come from the proof automatically. No new audit table, no new
+`AuditTarget` variant, append-only behaviour untouched.
+
+Events reuse `DomainEvent::NoteChanged` unchanged — identifiers and a version,
+never the Markdown — published after the commit. **No new event variant.** A
+failed import emits nothing.
+
+### No migration
+
+`V1` and `V2` remain the only migrations. Verified column by column: the ledger
+row, its idempotency key, the hash format, the resolution/version coherence
+check, import attribution, the audit action and metadata, the raw payload and the
+cross-meeting foreign key are all already expressible.
+
+### Expected implementation file plan
+
+Change only what the implementation actually requires, from this list:
+
+```text
+crates/app-core/src/service.rs          extract the helper; add import_remote_submission
+crates/app-core/src/port.rs             NewRemoteSubmission; find/insert on DomainTx
+crates/app-core/src/audit.rs            AuditAction::RemoteSubmissionImported
+crates/app-core/src/error.rs            DuplicateSubmission, ModifiedArtifact, cross-participant
+crates/app-core/src/lib.rs              re-exports
+crates/app-db/src/repository.rs         implement the new DomainTx methods
+crates/app-db/src/query.rs              preview-side ledger lookup
+crates/app-remote/src/lib.rs            a size-limit error
+src-tauri/src/host.rs                   preview + import; the only Actor::RemoteImport
+src-tauri/src/lib.rs                    drag-drop handler, pending state, command registration
+src-tauri/src/commands.rs
+src-tauri/src/dto.rs
+src-tauri/src/error.rs
+src-tauri/tests/boundaries.rs
+src-tauri/tests/remote_import_commands.rs
+crates/app-db/tests/remote_import.rs
+apps/host-ui/src/api/hostApi.ts
+apps/host-ui/src/components/ImportSubmissionPanel.tsx
+apps/host-ui/src/components/MeetingDetailView.tsx
+apps/host-ui/src/styles.css
+packages/contracts/src/host.ts
+packages/contracts/src/index.ts
+docs/adr/0022-remote-submission-import.md
+```
+
+### Expected untouched areas
+
+```text
+crates/app-db/migrations/**
+crates/app-core/src/authz.rs
+crates/app-core/src/actor.rs
+crates/app-core/src/note.rs
+crates/app-server/**
+apps/lan-ui/**
+apps/remote-form/**
+packages/editor/**
+crates/app-export/**
+scripts/check-remote-form-offline.mjs
+src-tauri/capabilities/default.json
+docs/adr/0001 - 0021
+```
+
+`authz.rs` and `actor.rs` in particular need **no change**: the authorization
+rule for import has existed and been tested since step 2.
+
+If implementation reveals that one of these must change, **stop and report it as
+an unresolved design issue** rather than silently expanding scope.
+
+### Approved test scope
+
+**`app-remote`.** Parse valid v1; malformed JSON; wrong schema version; invalid
+ids; the new size-limit error; canonical hash compatibility with the shared
+fixtures.
+
+**`app-db` / domain.** First import (version 1, `IMPORTED`); import over an
+existing note (N+1, `REPLACED`); attribution is `REMOTE_IMPORT` with the
+participant id; duplicate refused with exactly one ledger row and no second
+version or audit row; modified artefact refused with nothing written;
+cross-participant artefact refused; two distinct submission ids both succeed with
+last-write-wins; wrong meeting; unknown participant; removed participant;
+**revoked session but still on the roster succeeds**; locked meeting refused with
+zero rows in all four tables; stale `source_version` succeeds; forced failure at
+each stage rolls back everything; the `UNIQUE` race is a duplicate not a failure;
+audit row content; ledger row content; `note.changed` carries a version and no
+content; no event on failure.
+
+**Tauri.** Preview mutates nothing (row counts before and after); preview of a
+duplicate reports it without writing; confirmation re-checks after the meeting is
+locked post-preview; confirmation re-checks after the participant is removed
+post-preview; the Host-selected meeting cannot be bypassed; the actor is built
+only from resolved ids; oversized file refused before the read; non-UTF-8
+refused; missing file refused; the returned version matches the database.
+
+**Host UI.** Preview; name-mismatch warning; duplicate; modified artefact;
+explicit confirmation; result.
+
+**Guards.** No LAN HTTP import route; no browser-side import authority;
+`Actor::RemoteImport` only in `src-tauri/src/host.rs`; no SQL in `app-remote`; no
+rejected-submission write; no credential or signing mechanism; no capability
+expansion; no migration; no Step 11 lock implementation; `note_links` still
+schema-only.
+
+### Explicitly not part of Step 10
+
+No new LAN API; no changes to participant LAN editing; no structured note links;
+no merge; no optimistic concurrency; no form invalidation or expiry; no signing
+or HMAC; no cloud; no automatic upload; no bulk import; no import history UI; no
+PDF; no AI; no calendar; no lock implementation beyond consuming the existing
+`ensure_mutable()` rule; and no changes to remote-form generation unless a
+compatibility defect is proven.
 
 ---
 
@@ -1671,19 +2017,19 @@ Details beyond the above are **TBD**.
 
 ## Current Execution Point
 
-> Phase 1 is complete and pushed through Step 8B. **Step 9 — Remote Form
-> Generation — is implemented and awaiting review in the working tree.** Step 10
-> — Remote Submission Import — is the next implementation step and must be
-> executed separately.
+> Phase 1 is complete and pushed through Step 9. **Step 10 — Remote Submission
+> Import — is implemented and awaiting review in the working tree.** Step 11 —
+> Meeting Lock — is the next implementation step and must be executed
+> separately.
 
 Repository state:
 
-- branch `main`, `HEAD` = `120a9c553e29980663fb6418f2e921d3ec44fc71`
-- Steps 0 through 8B committed and pushed; Step 9 changes are uncommitted
+- branch `main`, `HEAD` = `e867bdc9b81a2e8138039856ff5f53ddffd54f58`
+- Steps 0 through 9 committed and pushed; Step 10 changes are uncommitted
 - Rust and TypeScript suites both passing
-- no migration exists beyond `V1` and `V2`, and Step 9 added none
+- no migration exists beyond `V1` and `V2`; neither Step 9 nor Step 10 added one
 
-A Host can now generate a standalone offline form for a participant, and a
-remote participant can fill it in and export a submission. **Nothing reads a
-submission back yet** - that is Step 10, and the decisions frozen for it in
-advance are listed in its section.
+The remote participation loop is now closed end to end: a Host generates an
+offline form, a participant fills it in and exports a submission, and the Host
+previews and imports it back into that participant's single note. What remains
+in Phase 1 is the meeting lock command (Step 11) and export (Step 12).

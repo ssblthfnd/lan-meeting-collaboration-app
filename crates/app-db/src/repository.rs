@@ -14,12 +14,12 @@
 use app_core::audit::AuditEntry;
 use app_core::authz::Authorized;
 use app_core::error::{DomainError, DomainResult};
-use app_core::id::{MeetingId, NoteId, ParticipantId, SessionId};
+use app_core::id::{MeetingId, NoteId, ParticipantId, SessionId, SubmissionId};
 use app_core::meeting::{Meeting, MeetingConfiguration, MeetingStatus};
 use app_core::participant::ParticipantDetails;
 use app_core::port::{
-    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NewSession, NoteRow,
-    ParticipantRow,
+    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NewRemoteSubmission,
+    NewSession, NoteRow, ParticipantRow, SubmissionRecord,
 };
 use app_core::session::SessionBinding;
 use app_core::time::UtcTimestamp;
@@ -206,6 +206,61 @@ impl DomainTx for DbTx<'_, '_> {
             )
             .map_err(DbError::from)?;
         Ok(latest)
+    }
+
+    fn find_remote_submission(
+        &self,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+        submission_id: SubmissionId,
+    ) -> DomainResult<Option<SubmissionRecord>> {
+        // `idx_remote_submissions_identity` covers this exactly. Ordered so a
+        // caller reads the newest row first; in practice the unique constraint
+        // makes several rows for one `submission_id` possible only when the
+        // content differed, which is a modified artefact either way.
+        let record = self
+            .tx
+            .query_row(
+                "SELECT participant_id, content_hash, note_version
+                   FROM remote_submissions
+                  WHERE meeting_id = ?1 AND participant_id = ?2 AND submission_id = ?3
+                    AND note_version IS NOT NULL
+                  ORDER BY imported_at DESC, id DESC
+                  LIMIT 1",
+                params![Sql(meeting_id), Sql(participant_id), Sql(submission_id)],
+                submission_record,
+            )
+            .optional()
+            .map_err(DbError::from)?;
+
+        Ok(record)
+    }
+
+    fn find_foreign_remote_submission(
+        &self,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+        submission_id: SubmissionId,
+    ) -> DomainResult<Option<SubmissionRecord>> {
+        // The cross-participant rule (ADR-0022 decision 6). Scoped to the
+        // meeting, which is all the confinement needed: a participant belongs to
+        // exactly one meeting, and the composite foreign key enforces it.
+        let record = self
+            .tx
+            .query_row(
+                "SELECT participant_id, content_hash, note_version
+                   FROM remote_submissions
+                  WHERE meeting_id = ?1 AND submission_id = ?2 AND participant_id <> ?3
+                    AND note_version IS NOT NULL
+                  ORDER BY imported_at ASC, id ASC
+                  LIMIT 1",
+                params![Sql(meeting_id), Sql(submission_id), Sql(participant_id)],
+                submission_record,
+            )
+            .optional()
+            .map_err(DbError::from)?;
+
+        Ok(record)
     }
 
     fn insert_meeting(&self, proof: &Authorized, meeting: &NewMeeting) -> DomainResult<()> {
@@ -503,6 +558,40 @@ impl DomainTx for DbTx<'_, '_> {
         Ok(())
     }
 
+    fn insert_remote_submission(
+        &self,
+        proof: &Authorized,
+        submission: &NewRemoteSubmission,
+    ) -> DomainResult<()> {
+        // `meeting_id` comes from the proof, so a ledger row cannot be written
+        // against a meeting the actor was not authorized for - the same rule
+        // every other write here follows.
+        //
+        // `raw_payload` is stored exactly as submitted. The column exists to
+        // keep external input verbatim for forensics; canonical bytes are for
+        // hashing and never reach here (ADR-0022 decision 15).
+        self.tx
+            .execute(
+                "INSERT INTO remote_submissions
+                   (id, meeting_id, participant_id, submission_id, content_hash,
+                    imported_at, resolution, note_version, raw_payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    Sql(submission.id),
+                    Sql(proof.meeting_id()),
+                    Sql(submission.participant_id),
+                    Sql(submission.submission_id),
+                    submission.content_hash,
+                    Sql(submission.at),
+                    submission.resolution.as_str(),
+                    submission.note_version,
+                    submission.raw_payload,
+                ],
+            )
+            .map_err(DbError::from)?;
+        Ok(())
+    }
+
     fn insert_audit(&self, proof: &Authorized, entry: &AuditEntry) -> DomainResult<()> {
         self.tx
             .execute(
@@ -525,6 +614,32 @@ impl DomainTx for DbTx<'_, '_> {
             .map_err(DbError::from)?;
         Ok(())
     }
+}
+
+/// Map one `remote_submissions` row.
+///
+/// `note_version` is `NOT NULL` for every row the MVP writes - a refusal writes
+/// nothing at all (ADR-0022 decision 7) - and both queries filter on that, so
+/// the column is read as a plain `i64`.
+///
+/// A stored id the domain cannot parse means something wrote past the `CHECK`
+/// constraint. Surfaced as a conversion failure rather than guessed, exactly as
+/// the read model does for a lifecycle status.
+fn submission_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubmissionRecord> {
+    let stored: String = row.get(0)?;
+    let participant_id = ParticipantId::parse(&stored).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::other(error.to_string())),
+        )
+    })?;
+
+    Ok(SubmissionRecord {
+        participant_id,
+        content_hash: row.get(1)?,
+        note_version: row.get(2)?,
+    })
 }
 
 impl Database for Db {

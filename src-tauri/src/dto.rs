@@ -408,6 +408,125 @@ pub struct RemoteFormGeneratedDto {
     pub generated_at: UtcTimestamp,
 }
 
+/// Why a pending submission cannot be imported, if it cannot.
+///
+/// Every value is a *refusal the preview can see coming*. It is advisory:
+/// confirmation asks the database again and is what decides (ADR-0022 d4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportBlockerDto {
+    /// The submission names a different meeting than the one selected.
+    MeetingMismatch,
+    /// The meeting is `LOCKED` and accepts no mutation.
+    MeetingLocked,
+    /// No participant of this meeting carries that id - removed, or never real.
+    ParticipantNotFound,
+    /// The note in the submission is not content the domain would store.
+    InvalidContent,
+    /// This exact artefact has been imported already.
+    Duplicate,
+    /// A known artefact whose content no longer matches.
+    ModifiedArtifact,
+    /// A known artefact reappearing under a different participant.
+    CrossParticipantArtifact,
+}
+
+/// What the Host sees before deciding whether to import.
+///
+/// **Nothing here is authority.** The identifiers were resolved a moment ago and
+/// may already be stale: a meeting can be locked, a participant removed, another
+/// submission imported and the note changed between this and a confirmation.
+/// Everything is asked again inside the import transaction, which is what
+/// decides (ADR-0022 decision 4).
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteSubmissionPreviewDto {
+    /// Where the artefact came from. Display only, never an identity.
+    pub origin: String,
+
+    /* ---- the meeting ---- */
+    /// The meeting the Host selected. This one is authoritative.
+    pub meeting_id: MeetingId,
+    pub meeting_title: String,
+    pub meeting_status: &'static str,
+    /// The meeting the submission claims. A candidate, and nothing more.
+    pub submission_meeting_id: MeetingId,
+    /// True when the two agree. False is a hard refusal, not a warning.
+    pub meeting_matches: bool,
+
+    /* ---- the participant ---- */
+    /// Resolved against the selected meeting, or `None` when nothing matched.
+    pub participant_id: Option<ParticipantId>,
+    /// The roster's own name for them. Authoritative for identity.
+    pub participant_name: Option<String>,
+    /// The name the file claims. Display and verification only; never stored.
+    pub submission_participant_name: String,
+    /// True when the two agree. False is a **warning**, not a refusal: the
+    /// database name wins either way (ADR-0022 decision 13).
+    pub participant_name_matches: bool,
+
+    /* ---- the note ---- */
+    /// The note version the form was generated from, or 0. Advisory.
+    pub source_version: i64,
+    /// The version the note is at now, or `None` when there is no note.
+    pub current_version: Option<i64>,
+    /// True when the note moved on after the form was generated. Not an error:
+    /// the import produces a new version regardless (ADR-0022 decision 10).
+    pub is_stale: bool,
+    /// The submitted note, rendered by the Host through the shared editor.
+    pub submitted_note: String,
+    /// What the note says now, for comparison.
+    pub current_note: Option<String>,
+
+    /* ---- the artefact ---- */
+    pub submission_id: SubmissionId,
+    /// Computed here from the parsed submission, never read out of the file.
+    pub content_hash: String,
+    /// What the ledger already knows. Advisory.
+    pub duplicate_state: &'static str,
+    /// The participant a cross-participant artefact was first imported for.
+    pub duplicate_participant_id: Option<ParticipantId>,
+    /// The note version an earlier import of this artefact produced.
+    pub duplicate_note_version: Option<i64>,
+
+    /* ---- timestamps, all untrusted ---- */
+    /// The Host's clock at generation, copied from the file.
+    pub generated_at: String,
+    /// A remote machine's clock. Display only, and excluded from the hash.
+    pub submitted_at: String,
+
+    /* ---- the verdict ---- */
+    /// True when nothing visible blocks the import. Still not a promise.
+    pub eligible: bool,
+    pub blocker: Option<ImportBlockerDto>,
+    /// The `app-core::note` refusal reason, when the content is the problem.
+    pub content_problem: Option<&'static str>,
+}
+
+/// What a successful import did.
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteSubmissionImportedDto {
+    pub meeting_id: MeetingId,
+    pub participant_id: ParticipantId,
+    pub participant_name: String,
+    pub submission_id: SubmissionId,
+    pub note_id: NoteId,
+    /// The history row this import produced.
+    pub version: i64,
+    /// `IMPORTED` when the note was created, `REPLACED` when it was replaced.
+    /// A description of what happened, not a mode anyone chose.
+    pub resolution: &'static str,
+    pub at: UtcTimestamp,
+}
+
+/// A submission waiting to be previewed.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingSubmissionDto {
+    /// The file name, or "pasted text". Display only.
+    pub origin: String,
+    /// How many bytes are waiting, so the Host can see something arrived.
+    pub bytes: usize,
+}
+
 /// Outcome of a Host action on a participant's session.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionChangedDto {

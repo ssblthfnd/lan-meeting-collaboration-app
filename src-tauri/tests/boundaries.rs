@@ -296,7 +296,7 @@ fn every_registered_command_is_reachable_from_the_host_ui_gateway() {
 
     assert_eq!(
         registered.len(),
-        24,
+        28,
         "every registered command must be reachable, found {registered:?}"
     );
 
@@ -842,14 +842,15 @@ fn the_remote_crate_holds_no_database_and_no_sql() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Scope: remote submission import is the Host's, and nobody else's
+// ---------------------------------------------------------------------------
+
 #[test]
-fn only_the_tauri_shell_may_construct_the_remote_import_actor() {
-    // ADR-0021 decision 14. The crate that reads an untrusted file is not the
-    // crate that produces authority: the actor is built from the Host-selected
-    // meeting and the database-resolved participant, after confirmation.
-    //
-    // Step 9 constructs it nowhere at all - generation asks for no authority -
-    // so the assertion is the strong one for now.
+fn only_the_tauri_host_layer_constructs_the_remote_import_actor() {
+    // ADR-0022 decision 3. The crate that reads an untrusted file is not the
+    // crate that produces authority, and neither is the LAN transport. The
+    // actor is built in one function, from rows the database returned.
     let root = repository_root();
 
     for file in sources(&root.join("crates/app-remote/src"), &["rs"]) {
@@ -862,55 +863,391 @@ fn only_the_tauri_shell_may_construct_the_remote_import_actor() {
         );
     }
 
-    let mut transports = sources(&root.join("src-tauri/src"), &["rs"]);
-    transports.extend(sources(&root.join("crates/app-server/src"), &["rs"]));
-    for file in transports {
+    for file in sources(&root.join("crates/app-server/src"), &["rs"]) {
         let contents = shipped_code(&file, &read(&file));
         assert!(
             !contents.contains("Actor::RemoteImport"),
-            "{} constructs Actor::RemoteImport: remote import is step 10",
+            "{} constructs Actor::RemoteImport: import is the Host's, and a \
+             participant must not be able to reach it",
+            file.display()
+        );
+    }
+
+    // Exactly one construction site in the shell, and it is the Host adapter.
+    let mut sites = Vec::new();
+    for file in sources(&root.join("src-tauri/src"), &["rs"]) {
+        if shipped_code(&file, &read(&file)).contains("Actor::RemoteImport {") {
+            sites.push(file.display().to_string());
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        1,
+        "Actor::RemoteImport must be constructed in exactly one place, found {sites:?}"
+    );
+    assert!(
+        sites[0]
+            .replace('\\', "/")
+            .ends_with("src-tauri/src/host.rs"),
+        "the actor must be built in the Host adapter, found {sites:?}"
+    );
+}
+
+#[test]
+fn no_lan_route_can_reach_the_import() {
+    // Import is the Host's. A participant holding a session token must not be
+    // able to write somebody's note by presenting a file (ADR-0022).
+    let root = repository_root();
+    let router = code_only(&read(&root.join("crates/app-server/src/router.rs")));
+
+    for forbidden in ["submission", "import"] {
+        assert!(
+            !router.contains(forbidden),
+            "the LAN router mentions `{forbidden}`: there is no import route"
+        );
+    }
+
+    for file in sources(&root.join("crates/app-server/src"), &["rs"]) {
+        let contents = shipped_code(&file, &read(&file));
+        for forbidden in [
+            "remote_submissions",
+            "SubmissionV1",
+            "import_remote_submission",
+        ] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} reaches for the import pipeline: it is the Host's",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn an_import_is_one_transaction_and_reuses_the_note_write() {
+    // ADR-0022 decision 5, the invariant the whole step turns on. Calling the
+    // public `write_note` and then writing the ledger would be two
+    // transactions, and could leave an imported note with no ledger row.
+    let root = repository_root();
+    let service = read(&root.join("crates/app-core/src/service.rs"));
+
+    let import = service
+        .split("pub fn import_remote_submission")
+        .nth(1)
+        .expect("the import operation")
+        .split(
+            "
+/// The gate every note write passes",
+        )
+        .next()
+        .expect("the operation ends");
+
+    assert!(
+        !import.contains("self.write_note("),
+        "import must not call write_note as a separate transaction"
+    );
+    assert_eq!(
+        import.matches("self.db.transaction(").count(),
+        1,
+        "an import opens exactly one transaction"
+    );
+    for required in [
+        "authorize_note_write(",
+        "find_remote_submission(",
+        "find_foreign_remote_submission(",
+        "apply_note_write(",
+        "insert_remote_submission(",
+        "insert_audit(",
+    ] {
+        assert!(
+            import.contains(required),
+            "the import transaction must call `{required}`"
+        );
+    }
+
+    // The event follows the commit, never precedes it.
+    let publish = import.find("self.publish(").expect("an event is published");
+    let committed = import
+        .find("committed(outcome")
+        .expect("the transaction commits");
+    assert!(
+        committed < publish,
+        "note.changed must be published only after the commit"
+    );
+
+    // Both callers share the mutation, so lock enforcement and version
+    // derivation exist in one implementation.
+    let write_note = service
+        .split("pub fn write_note(")
+        .nth(1)
+        .expect("write_note")
+        .split("pub fn import_remote_submission")
+        .next()
+        .expect("it ends");
+    for required in ["authorize_note_write(", "apply_note_write("] {
+        assert!(
+            write_note.contains(required),
+            "write_note must use the shared `{required}`"
+        );
+    }
+
+    let gate = service
+        .split("fn authorize_note_write(")
+        .nth(1)
+        .expect("the gate")
+        .split("fn apply_note_write(")
+        .next()
+        .expect("it ends");
+    for required in [
+        "find_meeting(",
+        "authorize(actor",
+        "ensure_mutable()",
+        "validate_note_content(",
+        "find_participant(",
+    ] {
+        assert!(gate.contains(required), "the gate must still `{required}`");
+    }
+
+    let apply = service
+        .split("fn apply_note_write(")
+        .nth(1)
+        .expect("the write");
+    for required in [
+        "latest_note_version(",
+        "insert_note_version(",
+        "insert_note(",
+    ] {
+        assert!(
+            apply.contains(required),
+            "the shared write must still `{required}`"
+        );
+    }
+    assert!(
+        !apply.contains("insert_audit("),
+        "audit belongs to each caller, so an import records the action it is"
+    );
+}
+
+#[test]
+fn the_import_gate_decides_before_artefact_identity() {
+    // The ordering a Step 10 review found reversed, pinned so it cannot regress
+    // silently. A locked meeting must be refused *as locked* even when the file
+    // is also a duplicate, and an actor with no standing must be refused *as
+    // unauthorized* even when the artefact is one this application has seen.
+    //
+    // Behavioural proof lives in `crates/app-db/tests/remote_import.rs`; this is
+    // the structural half, because an ordering is easy to undo by moving three
+    // lines and every one of those tests would still fail only by answering
+    // differently.
+    let root = repository_root();
+    let service = read(&root.join("crates/app-core/src/service.rs"));
+
+    let import = service
+        .split("pub fn import_remote_submission")
+        .nth(1)
+        .expect("the import operation")
+        .split(
+            "
+/// The gate every note write passes",
+        )
+        .next()
+        .expect("the operation ends");
+
+    let gate = import
+        .find("authorize_note_write(")
+        .expect("the gate runs inside the transaction");
+
+    for identity in ["find_remote_submission(", "find_foreign_remote_submission("] {
+        let at = import
+            .find(identity)
+            .unwrap_or_else(|| panic!("`{identity}` must be called"));
+        assert!(
+            gate < at,
+            "`{identity}` runs before the gate: the lock, the actor's authority              and the participant's membership must all decide first"
+        );
+    }
+
+    // And the write comes after both, so a refusal never depends on rollback.
+    let apply = import
+        .find("apply_note_write(")
+        .expect("the note is written");
+    assert!(
+        import
+            .find("find_foreign_remote_submission(")
+            .expect("identity")
+            < apply,
+        "artefact identity must be settled before anything is written"
+    );
+}
+
+#[test]
+fn a_refused_submission_is_never_recorded() {
+    // ADR-0022 decision 7: a refusal writes nothing. The two rejection words in
+    // the schema's CHECK stay unused, and nothing in shipped code reaches for
+    // them.
+    let root = repository_root();
+    let mut files = sources(&root.join("crates/app-core/src"), &["rs"]);
+    files.extend(sources(&root.join("crates/app-db/src"), &["rs"]));
+    files.extend(sources(&root.join("src-tauri/src"), &["rs"]));
+
+    for file in files {
+        let contents = shipped_code(&file, &read(&file));
+        for forbidden in ["REJECTED_DUPLICATE", "REJECTED_INVALID"] {
+            assert!(
+                !contents.contains(forbidden),
+                "{} writes a rejected submission: a refusal records nothing",
+                file.display()
+            );
+        }
+    }
+
+    // The schema still permits them, so a later design can revisit the ledger
+    // deliberately rather than needing a migration to start.
+    let schema = read(&root.join("crates/app-db/migrations/V1__initial_schema.sql"));
+    assert!(
+        schema.contains("REJECTED_DUPLICATE"),
+        "the CHECK is unchanged"
+    );
+}
+
+#[test]
+fn the_window_never_names_a_file_or_an_artefact() {
+    // ADR-0022 decisions 4 and 17. A renderer that cannot name a path cannot
+    // read an arbitrary file; one that cannot hand back an artefact cannot
+    // confirm one the Host never saw.
+    let root = repository_root();
+    let gateway = read(&root.join("apps/host-ui/src/api/hostApi.ts"));
+
+    for command in ["preview_remote_submission", "confirm_remote_submission"] {
+        let call = gateway
+            .split(&format!("'{command}'"))
+            .nth(1)
+            .expect("the call")
+            .split("}")
+            .next()
+            .expect("the argument object ends");
+
+        for forbidden in ["path", "directory", "raw", "json", "artifact", "text"] {
+            assert!(
+                !call.contains(forbidden),
+                "the window passed `{forbidden}` to {command}: the backend holds the artefact"
+            );
+        }
+    }
+
+    // The Rust side agrees: neither command takes bytes or a path.
+    let commands = read(&root.join("src-tauri/src/commands.rs"));
+    for command in [
+        "pub fn preview_remote_submission",
+        "pub fn confirm_remote_submission",
+    ] {
+        let signature = commands
+            .split(command)
+            .nth(1)
+            .expect("the command")
+            .split(')')
+            .next()
+            .expect("the signature ends");
+        assert!(
+            !signature.contains("path") && !signature.contains("raw"),
+            "{command} must take no artefact and no path: {signature}"
+        );
+    }
+}
+
+#[test]
+fn the_drag_drop_handler_holds_no_logic() {
+    // `run()` cannot be tested, so nothing decidable may live in it
+    // (ADR-0022 decision 17).
+    let root = repository_root();
+    let lib = read(&root.join("src-tauri/src/lib.rs"));
+
+    let handler = lib
+        .split(".on_window_event(")
+        .nth(1)
+        .expect("the drag-drop hook")
+        .split(".invoke_handler(")
+        .next()
+        .expect("the closure ends");
+
+    assert!(
+        handler.contains("remote_import::announce_drop("),
+        "the handler must delegate to a testable function"
+    );
+    for forbidden in ["std::fs", "read_to_string", "SubmissionV1", "Actor::"] {
+        assert!(
+            !handler.contains(forbidden),
+            "the drag-drop handler mentions `{forbidden}`: it must only delegate"
+        );
+    }
+}
+
+#[test]
+fn the_import_reads_no_unbounded_file() {
+    // ADR-0022 decision 16. Checked before the read and again on the result, so
+    // a file that grows mid-operation cannot get past the bound.
+    let root = repository_root();
+    let module = read(&root.join("src-tauri/src/remote_import.rs"));
+
+    let bounded = module
+        .split("pub fn read_bounded(")
+        .nth(1)
+        .expect("the bounded read")
+        .split("\n/// ")
+        .next()
+        .expect("it ends");
+
+    assert!(
+        bounded.find("metadata(").expect("a size check")
+            < bounded.find("fs::read(").expect("a read"),
+        "the size must be checked before the file is read"
+    );
+    assert_eq!(
+        bounded.matches("MAX_SUBMISSION_BYTES").count(),
+        4,
+        "both the reported size and the read result must be checked"
+    );
+
+    // And nothing else in the shell reads a file without that helper.
+    for file in sources(&root.join("src-tauri/src"), &["rs"]) {
+        let contents = shipped_code(&file, &read(&file));
+        if file
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .ends_with("remote_import.rs")
+        {
+            continue;
+        }
+        assert!(
+            !contents.contains("fs::read"),
+            "{} reads a file directly: use the bounded reader",
             file.display()
         );
     }
 }
 
 #[test]
-fn no_submission_import_has_arrived_with_generation() {
-    // Step 9 is the form. Import - the ledger, the preview, the transaction -
-    // is step 10, and each of these names would be the whole of it arriving
-    // through the side door.
+fn the_import_adds_no_capability_and_no_plugin() {
+    // ADR-0022 decision 17. Drag-drop needs neither: `core:default` already
+    // grants `core:event:default`, and a Rust-side handler needs no permission.
     let root = repository_root();
-    let mut files = sources(&root.join("src-tauri/src"), &["rs"]);
-    files.extend(sources(&root.join("crates/app-remote/src"), &["rs"]));
-    files.extend(sources(&root.join("crates/app-core/src"), &["rs"]));
-    files.extend(sources(&root.join("crates/app-db/src"), &["rs"]));
-    files.extend(sources(&root.join("crates/app-server/src"), &["rs"]));
 
-    for file in files {
-        let contents = shipped_code(&file, &read(&file));
-        for forbidden in [
-            "remote_submissions",
-            "import_remote_submission",
-            "import_submission",
-            "insert_remote_submission",
-            "RemoteSubmissionRow",
-            "SubmissionResolution",
-        ] {
-            assert!(
-                !contents.contains(forbidden),
-                "{} touches remote submission import: that is step 10",
-                file.display()
-            );
-        }
-    }
-
-    // And no route on the LAN transport could ever accept one. Import is the
-    // Host's, and a participant must not be able to reach it.
-    let router = read(&root.join("crates/app-server/src/router.rs"));
+    let manifest = read(&root.join("src-tauri/Cargo.toml"));
     assert!(
-        !router.contains("submission") && !router.contains("import"),
-        "the LAN router must expose no import route"
+        !manifest.contains("tauri-plugin"),
+        "no filesystem or dialog plugin may be added for import"
     );
+
+    let capability = read(&root.join("src-tauri/capabilities/default.json"));
+    for forbidden in [
+        "fs:", "dialog:", "shell:", "http:", "process:", "os:", "sql:", "updater:",
+    ] {
+        assert!(
+            !capability.contains(forbidden),
+            "the default capability must not grant {forbidden}"
+        );
+    }
 }
 
 #[test]

@@ -49,11 +49,14 @@ use crate::audit::{AuditAction, AuditEntry, AuditTarget};
 use crate::authz::{authorize, Authorized, Operation};
 use crate::error::{DomainError, DomainResult};
 use crate::event::{DomainEvent, EventSink, NoEvents};
-use crate::id::{MeetingId, NoteId, NoteVersionId, ParticipantId, SessionId};
+use crate::id::{
+    MeetingId, NoteId, NoteVersionId, ParticipantId, RemoteSubmissionId, SessionId, SubmissionId,
+};
 use crate::meeting::{MeetingConfiguration, MeetingStatus};
 use crate::participant::{ensure_room_for_one_more, ParticipantDetails};
 use crate::port::{
-    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NewSession,
+    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NewRemoteSubmission,
+    NewSession, SubmissionResolution,
 };
 use crate::session::SessionBinding;
 use crate::time::UtcTimestamp;
@@ -70,6 +73,44 @@ pub struct WriteNote {
     pub meeting_id: MeetingId,
     pub participant_id: ParticipantId,
     pub content: String,
+}
+
+/// Import one remote participant's submission, as the Host confirmed it.
+///
+/// Every field is already **resolved and validated**: `meeting_id` and
+/// `participant_id` are the ids of rows the Host's database returned, not the
+/// candidates the file carried, and `content_hash` was computed from the parsed
+/// submission rather than read out of it (ADR-0022 decisions 2 and 11).
+///
+/// `participant_id` names whose note to write. It is a target, never a claim
+/// about who is asking: authority comes from the [`Actor`] alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportSubmission {
+    pub meeting_id: MeetingId,
+    pub participant_id: ParticipantId,
+    /// The artefact this submission was exported from.
+    pub submission_id: SubmissionId,
+    /// SHA-256 over the canonical form, lowercase hex.
+    pub content_hash: String,
+    /// The note, already line-ending normalised by the canonical pass.
+    pub content: String,
+    /// The exact submitted bytes, for the ledger. Never re-serialised.
+    pub raw_payload: String,
+    /// Advisory context only. It never blocks and never becomes the version.
+    pub source_version: i64,
+}
+
+/// Outcome of a remote submission import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubmissionImported {
+    pub note_id: NoteId,
+    /// The history row this import produced, derived inside the transaction.
+    pub version: i64,
+    /// True when the import created the note rather than replacing its content.
+    pub created: bool,
+    /// What the ledger recorded. A description, not a mode anyone chose.
+    pub resolution: SubmissionResolution,
+    pub at: UtcTimestamp,
 }
 
 /// Outcome of creating a meeting.
@@ -936,6 +977,11 @@ impl<D: Database> Domain<D> {
     /// is an upsert by construction: it never produces a second note. Every
     /// successful call appends one `note_versions` row, whose number is derived
     /// from current state inside this transaction.
+    ///
+    /// The work happens in [`authorize_note_write`] and [`apply_note_write`],
+    /// which a remote import shares. Two implementations of the lock re-read or
+    /// the version derivation would be two places for them to disagree, and
+    /// those are exactly the two that must not (ADR-0022 decision 5).
     pub fn write_note(&self, actor: &Actor, command: WriteNote) -> DomainResult<NoteWritten> {
         let WriteNote {
             meeting_id,
@@ -946,88 +992,31 @@ impl<D: Database> Domain<D> {
         let mut outcome = None;
 
         self.db.transaction(&mut |tx: &dyn DomainTx| {
-            // 1. Current state.
-            let meeting = tx
-                .find_meeting(meeting_id)?
-                .ok_or(DomainError::MeetingNotFound { meeting_id })?;
-
-            // 2. Authorization. A participant may write only their own note;
-            //    the Host may write anyone's; an import is confined to its own.
-            let proof = authorize(actor, meeting_id, Operation::WriteNote { participant_id })?;
-
-            // 3. The lock.
-            meeting.ensure_mutable()?;
-
-            // 4. Validation.
-            validate_note_content(&content)?;
-            if tx.find_participant(meeting_id, participant_id)?.is_none() {
-                return Err(DomainError::ParticipantNotFound {
-                    meeting_id,
-                    participant_id,
-                });
-            }
-
-            // 5. Upsert the single note.
             let at = UtcTimestamp::now();
-            let (note_id, created) = match tx.find_note(meeting_id, participant_id)? {
-                Some(existing) => {
-                    tx.update_note_content(&proof, existing.id, &content, at)?;
-                    (existing.id, false)
-                }
-                None => {
-                    let note_id = NoteId::new();
-                    tx.insert_note(
-                        &proof,
-                        &NewNote {
-                            id: note_id,
-                            participant_id,
-                            content: content.clone(),
-                            at,
-                        },
-                    )?;
-                    (note_id, true)
-                }
-            };
+            let proof = authorize_note_write(tx, actor, meeting_id, participant_id, &content)?;
+            let written = apply_note_write(tx, &proof, meeting_id, participant_id, &content, at)?;
 
-            // 6. History. The version comes from the database, never from the
-            //    caller. `UNIQUE(note_id, version)` makes a lost race a
-            //    conflict rather than a duplicate.
-            let version = tx.latest_note_version(note_id)? + 1;
-            tx.insert_note_version(
-                &proof,
-                &NewNoteVersion {
-                    id: NoteVersionId::new(),
-                    note_id,
-                    version,
-                    content: content.clone(),
-                    at,
-                },
-            )?;
-
-            // 7. Audit, same transaction.
+            // Audit belongs to the caller, not to the helper: what a note write
+            // *is* differs between a person editing and an import arriving, and
+            // the action recorded should say which.
             tx.insert_audit(
                 &proof,
                 &AuditEntry {
-                    action: if created {
+                    action: if written.created {
                         AuditAction::NoteCreated
                     } else {
                         AuditAction::NoteUpdated
                     },
-                    target: AuditTarget::Note(note_id),
+                    target: AuditTarget::Note(written.note_id),
                     metadata: json!({
                         "participant_id": participant_id.to_storage(),
-                        "version": version,
+                        "version": written.version,
                     }),
                     at,
                 },
             )?;
 
-            outcome = Some(NoteWritten {
-                note_id,
-                version,
-                created,
-                at,
-            });
+            outcome = Some(written);
             Ok(())
         })?;
 
@@ -1043,6 +1032,269 @@ impl<D: Database> Domain<D> {
         });
         Ok(outcome)
     }
+
+    /// Import a remote participant's submission, as the Host confirmed it.
+    ///
+    /// The whole of it is **one** transaction: the note, its version, the
+    /// idempotency ledger row and the audit entry commit together or not at all
+    /// (architecture rules section 11, ADR-0022 decision 5). Calling
+    /// [`Domain::write_note`] and then writing the ledger would be two
+    /// transactions, and could leave an imported note with no ledger row -
+    /// idempotency quietly broken.
+    ///
+    /// Everything security-critical is decided against state read **inside**
+    /// that transaction: the meeting's lock, the actor's authority, the
+    /// participant's membership, the content rules and the artefact's identity.
+    /// A Host preview is informational, and nothing it concluded is carried in
+    /// here as authority (ADR-0022 decision 4).
+    ///
+    /// `actor` must be [`Actor::RemoteImport`] built from database-resolved
+    /// identifiers. `authorize` refuses a target participant that is not the
+    /// actor's own regardless, which is what makes a mistake at the transport
+    /// boundary a refusal rather than a breach.
+    pub fn import_remote_submission(
+        &self,
+        actor: &Actor,
+        command: ImportSubmission,
+    ) -> DomainResult<SubmissionImported> {
+        let ImportSubmission {
+            meeting_id,
+            participant_id,
+            submission_id,
+            content_hash,
+            content,
+            raw_payload,
+            source_version,
+        } = command;
+
+        let mut outcome = None;
+
+        self.db.transaction(&mut |tx: &dyn DomainTx| {
+            // 1. The gate: the meeting, the actor's authority, the lock, the
+            //    content rules and the participant's membership - all judged
+            //    against state read inside this transaction.
+            //
+            //    **Before artefact identity, and that order is load-bearing.** A
+            //    locked meeting must be refused as locked even when the file
+            //    offered is also a duplicate, and an actor with no standing must
+            //    be refused as unauthorized even when the artefact it carries is
+            //    one this application has seen. Identity is never an
+            //    authorization shortcut and never a lifecycle one.
+            let at = UtcTimestamp::now();
+            let proof = authorize_note_write(tx, actor, meeting_id, participant_id, &content)?;
+
+            // 2. Artefact identity, now that this import is permitted at all.
+            //    Inside the transaction, so a concurrent import cannot slip
+            //    between the check and the write (ADR-0022 decision 6).
+            //
+            //    Before the write rather than after: a duplicate should cost
+            //    nothing, and a refusal that had already written a version would
+            //    depend on rollback to be correct.
+            if let Some(seen) =
+                tx.find_remote_submission(meeting_id, participant_id, submission_id)?
+            {
+                return Err(if seen.content_hash == content_hash {
+                    DomainError::DuplicateSubmission {
+                        submission_id,
+                        note_version: seen.note_version,
+                    }
+                } else {
+                    DomainError::ModifiedArtifact { submission_id }
+                });
+            }
+
+            // 3. The same artefact under somebody else. Changing
+            //    `participant_id` changes the canonical hash, so the lookup
+            //    above cannot see it.
+            if let Some(foreign) =
+                tx.find_foreign_remote_submission(meeting_id, participant_id, submission_id)?
+            {
+                return Err(DomainError::CrossParticipantArtifact {
+                    submission_id,
+                    expected: foreign.participant_id,
+                    detected: participant_id,
+                });
+            }
+
+            // 4. The note itself: the upsert and the version, shared with a
+            //    participant's own write so neither can drift.
+            let written = apply_note_write(tx, &proof, meeting_id, participant_id, &content, at)?;
+
+            let resolution = if written.created {
+                SubmissionResolution::Imported
+            } else {
+                SubmissionResolution::Replaced
+            };
+
+            // 5. The ledger, under the same proof, so `proof.meeting_id()`
+            //    scopes the row and no caller can supply a different meeting.
+            tx.insert_remote_submission(
+                &proof,
+                &NewRemoteSubmission {
+                    id: RemoteSubmissionId::new(),
+                    participant_id,
+                    submission_id,
+                    content_hash: content_hash.clone(),
+                    resolution,
+                    note_version: written.version,
+                    raw_payload: raw_payload.clone(),
+                    at,
+                },
+            )?;
+
+            // 6. Audit. The note body is never in metadata, and neither is the
+            //    payload: both are already stored where they belong.
+            tx.insert_audit(
+                &proof,
+                &AuditEntry {
+                    action: AuditAction::RemoteSubmissionImported,
+                    target: AuditTarget::Note(written.note_id),
+                    metadata: json!({
+                        "participant_id": participant_id.to_storage(),
+                        "submission_id": submission_id.to_storage(),
+                        "content_hash": content_hash,
+                        "source_version": source_version,
+                        "note_version": written.version,
+                        "resolution": resolution.as_str(),
+                    }),
+                    at,
+                },
+            )?;
+
+            outcome = Some(SubmissionImported {
+                note_id: written.note_id,
+                version: written.version,
+                created: written.created,
+                resolution,
+                at,
+            });
+            Ok(())
+        })?;
+
+        let outcome = committed(outcome, "importing a remote submission")?;
+        // After the commit, and only then. A failed import returns above and
+        // never reaches this line, so it announces nothing.
+        self.publish(DomainEvent::NoteChanged {
+            meeting_id,
+            participant_id,
+            note_id: outcome.note_id,
+            version: outcome.version,
+            at: outcome.at,
+        });
+        Ok(outcome)
+    }
+}
+
+/// The gate every note write passes, inside the caller's transaction.
+///
+/// Split out of the write itself so an import can put its **security and
+/// lifecycle** decisions before its **artefact identity** decisions without
+/// either caller growing its own copy of them (ADR-0022 decision 5).
+///
+/// That ordering is the point. A locked meeting must be refused *as locked*,
+/// even when the artefact offered also happens to be a duplicate - and an actor
+/// with no standing must be refused *as unauthorized*, even when the artefact it
+/// carries is one this application has seen before. Artefact identity is never
+/// an authorization shortcut, and never a lifecycle one.
+///
+/// Returns the proof, so the caller may write the note, a ledger row and an
+/// audit record under the same authorization, in the same transaction.
+fn authorize_note_write(
+    tx: &dyn DomainTx,
+    actor: &Actor,
+    meeting_id: MeetingId,
+    participant_id: ParticipantId,
+    content: &str,
+) -> DomainResult<Authorized> {
+    // 1. Current state, read inside this transaction.
+    let meeting = tx
+        .find_meeting(meeting_id)?
+        .ok_or(DomainError::MeetingNotFound { meeting_id })?;
+
+    // 2. Authorization. A participant may write only their own note; the Host
+    //    may write anyone's; an import is confined to its own.
+    //
+    //    Before the lock, as step 8 established: someone with no standing in
+    //    this meeting learns that they have none, and not what state it is in.
+    let proof = authorize(actor, meeting_id, Operation::WriteNote { participant_id })?;
+
+    // 3. The lock, judged against the state just loaded. A pre-flight check
+    //    elsewhere is a race; this is the enforcement.
+    meeting.ensure_mutable()?;
+
+    // 4. Validation.
+    validate_note_content(content)?;
+    if tx.find_participant(meeting_id, participant_id)?.is_none() {
+        return Err(DomainError::ParticipantNotFound {
+            meeting_id,
+            participant_id,
+        });
+    }
+
+    Ok(proof)
+}
+
+/// Write the note and append its history row, once the gate has passed.
+///
+/// The shared mechanics, so that the upsert, the version derivation and the
+/// history row exist in exactly one implementation. It decides nothing: an
+/// [`Authorized`] is the evidence that every decision has already been made,
+/// and only [`authorize_note_write`] can produce one.
+///
+/// Deliberately does **not** write audit and does **not** publish: what the
+/// write means differs between callers, and an event may only follow a commit
+/// this function cannot see.
+fn apply_note_write(
+    tx: &dyn DomainTx,
+    proof: &Authorized,
+    meeting_id: MeetingId,
+    participant_id: ParticipantId,
+    content: &str,
+    at: UtcTimestamp,
+) -> DomainResult<NoteWritten> {
+    // Upsert the single note. Exactly one exists per participant per meeting
+    // (ADR-0003), so this never produces a second.
+    let (note_id, created) = match tx.find_note(meeting_id, participant_id)? {
+        Some(existing) => {
+            tx.update_note_content(proof, existing.id, content, at)?;
+            (existing.id, false)
+        }
+        None => {
+            let note_id = NoteId::new();
+            tx.insert_note(
+                proof,
+                &NewNote {
+                    id: note_id,
+                    participant_id,
+                    content: content.to_owned(),
+                    at,
+                },
+            )?;
+            (note_id, true)
+        }
+    };
+
+    // History. The version comes from the database, never from the caller.
+    // `UNIQUE(note_id, version)` makes a lost race a conflict rather than a
+    // duplicate.
+    let version = tx.latest_note_version(note_id)? + 1;
+    tx.insert_note_version(
+        proof,
+        &NewNoteVersion {
+            id: NoteVersionId::new(),
+            note_id,
+            version,
+            content: content.to_owned(),
+            at,
+        },
+    )?;
+
+    Ok(NoteWritten {
+        note_id,
+        version,
+        created,
+        at,
+    })
 }
 
 /// Unwrap the value a committed transaction produced.

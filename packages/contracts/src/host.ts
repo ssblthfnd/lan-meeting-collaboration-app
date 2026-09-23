@@ -553,6 +553,139 @@ export interface RemoteFormGenerated {
   readonly generated_at: Iso8601Utc;
 }
 
+/* -------------------------------------------------------------------------
+ * Remote submission import
+ *
+ * The Host reads a submission file back. Every identifier inside it is a
+ * **candidate** resolved against the database; the Host-selected meeting and
+ * the roster are authoritative (ADR-0022 decisions 1 and 2).
+ * ------------------------------------------------------------------------- */
+
+/** A submission waiting to be previewed, dropped on the window or pasted. */
+export interface PendingSubmission {
+  /** A file name, or `pasted text`. Display only, never an identity. */
+  readonly origin: string;
+  readonly bytes: number;
+}
+
+/**
+ * What the backend announces when a file is dropped on the Host window.
+ *
+ * Carries no filesystem path: the path is handled in Rust and the window is
+ * told only that something arrived (ADR-0022 decision 17).
+ */
+export interface RemoteSubmissionPendingEvent {
+  readonly origin: string;
+  readonly bytes: number;
+  /** Set when the drop was refused - oversized, unreadable, not UTF-8. */
+  readonly error: string | null;
+}
+
+/** Why a pending submission cannot be imported, if it cannot. */
+export type ImportBlocker =
+  /** The submission names a different meeting than the one selected. */
+  | 'meeting_mismatch'
+  /** The meeting is `LOCKED` and accepts no mutation. */
+  | 'meeting_locked'
+  /** No participant of this meeting carries that id - removed, or never real. */
+  | 'participant_not_found'
+  /** The note is not content the backend would store. */
+  | 'invalid_content'
+  /** This exact artefact has been imported already. */
+  | 'duplicate'
+  /** A known artefact whose content no longer matches. */
+  | 'modified_artifact'
+  /** A known artefact reappearing under a different participant. */
+  | 'cross_participant_artifact';
+
+/** What the ledger already knows about an artefact. */
+export type SubmissionDuplicateState =
+  | 'new'
+  | 'duplicate'
+  | 'modified_artifact'
+  | 'cross_participant';
+
+/**
+ * What the Host sees before deciding whether to import.
+ *
+ * **Nothing here is authority.** These values were resolved a moment ago and may
+ * already be stale: a meeting can be locked, a participant removed and the note
+ * changed before a confirmation lands. Everything is asked again inside the
+ * import transaction, which is what decides (ADR-0022 decision 4).
+ */
+export interface RemoteSubmissionPreview {
+  /** Where the artefact came from. Display only. */
+  readonly origin: string;
+
+  /** The meeting the Host selected. Authoritative. */
+  readonly meeting_id: MeetingId;
+  readonly meeting_title: string;
+  readonly meeting_status: MeetingStatus;
+  /** The meeting the file claims. A candidate, and nothing more. */
+  readonly submission_meeting_id: MeetingId;
+  /** False is a hard refusal, not a warning. */
+  readonly meeting_matches: boolean;
+
+  /** Resolved against the selected meeting, or `null` when nothing matched. */
+  readonly participant_id: ParticipantId | null;
+  /** The roster's own name. Authoritative for identity. */
+  readonly participant_name: string | null;
+  /** The name the file claims. Display and verification only. */
+  readonly submission_participant_name: string;
+  /** False is a **warning**: the database name wins either way. */
+  readonly participant_name_matches: boolean;
+
+  /** The version the form was generated from, or 0. Advisory. */
+  readonly source_version: number;
+  /** The version the note is at now, or `null` when there is no note. */
+  readonly current_version: number | null;
+  /** True when the note moved on since generation. Not an error. */
+  readonly is_stale: boolean;
+  /** The submitted note. Render through `@lan-meeting/editor`, never as HTML. */
+  readonly submitted_note: string;
+  /** What the note says now, for comparison. */
+  readonly current_note: string | null;
+
+  readonly submission_id: SubmissionId;
+  /** Computed by the backend from the parsed submission, never read from it. */
+  readonly content_hash: string;
+  readonly duplicate_state: SubmissionDuplicateState;
+  /** The participant a cross-participant artefact was first imported for. */
+  readonly duplicate_participant_id: ParticipantId | null;
+  /** The note version an earlier import of this artefact produced. */
+  readonly duplicate_note_version: number | null;
+
+  /** The Host's clock at generation, copied from the file. */
+  readonly generated_at: string;
+  /** A remote machine's clock. Display only, and excluded from the hash. */
+  readonly submitted_at: string;
+
+  /** True when nothing visible blocks the import. Still not a promise. */
+  readonly eligible: boolean;
+  readonly blocker: ImportBlocker | null;
+  /** The backend's refusal reason when the content is the problem. */
+  readonly content_problem: string | null;
+}
+
+/** What a successful import did. */
+export interface RemoteSubmissionImported {
+  readonly meeting_id: MeetingId;
+  readonly participant_id: ParticipantId;
+  /** The roster's own name, not the one the file claimed. */
+  readonly participant_name: string;
+  readonly submission_id: SubmissionId;
+  readonly note_id: NoteId;
+  readonly version: number;
+  /**
+   * `IMPORTED` when the note was created, `REPLACED` when it was replaced.
+   *
+   * A description of what happened, not a mode anyone chose: there is no Host
+   * replace action for remote submissions (ADR-0022 decision 8).
+   */
+  readonly resolution: 'IMPORTED' | 'REPLACED';
+  readonly at: Iso8601Utc;
+}
+
 /** Outcome of a Host action on a participant's session. */
 export interface SessionChanged {
   readonly participant_id: ParticipantId;

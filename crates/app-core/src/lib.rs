@@ -66,13 +66,13 @@ pub use meeting::{Meeting, MeetingConfiguration, MeetingStatus};
 pub use note::{NoteProblem, ALLOWED_LINK_SCHEMES, MAX_NOTE_BYTES};
 pub use participant::{ParticipantDetails, MAX_PARTICIPANTS, MIN_PARTICIPANTS};
 pub use port::{
-    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NewSession, NoteRow,
-    ParticipantRow,
+    Database, DomainTx, NewMeeting, NewNote, NewNoteVersion, NewParticipant, NewRemoteSubmission,
+    NewSession, NoteRow, ParticipantRow, SubmissionRecord, SubmissionResolution,
 };
 pub use service::{
-    Domain, IdentityClaimed, JoinTokenIssued, MeetingCreated, MeetingTransitioned, MeetingUpdated,
-    NoteWritten, ParticipantAdded, ParticipantRemoved, ParticipantUpdated, SessionChanged,
-    WriteNote,
+    Domain, IdentityClaimed, ImportSubmission, JoinTokenIssued, MeetingCreated,
+    MeetingTransitioned, MeetingUpdated, NoteWritten, ParticipantAdded, ParticipantRemoved,
+    ParticipantUpdated, SessionChanged, SubmissionImported, WriteNote,
 };
 pub use session::{ClaimStatus, SessionBinding};
 pub use time::{MeetingDate, MeetingTime, MeetingTimeZone, TimeError, UtcTimestamp};

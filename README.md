@@ -130,8 +130,8 @@ Phase 1 is built in order, each step independently demonstrable:
 7. Realtime: audience-scoped WebSocket and presence
 8. Host note editing and version history
 8B. Participant note editing over the LAN
-9. Remote form generation *(current)*
-10. Remote submission import pipeline
+9. Remote form generation
+10. Remote submission import pipeline *(current)*
 11. Meeting lock
 12. Export: Markdown and TXT / AI Context
 

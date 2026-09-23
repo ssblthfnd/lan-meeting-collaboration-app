@@ -21,7 +21,7 @@
 //! There are no HTTP status codes here. This transport has no HTTP.
 
 use app_core::error::DomainError;
-use app_core::id::{MeetingId, ParticipantId};
+use app_core::id::{MeetingId, ParticipantId, SubmissionId};
 use app_core::meeting::MeetingStatus;
 use serde::Serialize;
 
@@ -102,6 +102,26 @@ pub enum HostErrorKind {
         expected: String,
         detected: String,
     },
+    /// This exact artefact has already been imported (ADR-0022 decision 6).
+    ///
+    /// Carries the version the earlier import produced, because the useful
+    /// thing to tell a Host is *which* version they already have.
+    DuplicateSubmission {
+        submission_id: SubmissionId,
+        note_version: i64,
+    },
+    /// A known artefact whose content no longer matches. Not a correction: a
+    /// correction is a newly generated form (ADR-0022 decision 6).
+    ModifiedArtifact {
+        submission_id: SubmissionId,
+    },
+    /// A known artefact reappearing under a different participant of the same
+    /// meeting - evidence the file was edited.
+    CrossParticipantArtifact {
+        submission_id: SubmissionId,
+        expected: ParticipantId,
+        detected: ParticipantId,
+    },
     /// Deliberately field-less: the underlying detail is a SQLite constraint
     /// message, which is a diagnostic and not something to show a user.
     Conflict,
@@ -130,6 +150,12 @@ impl HostErrorKind {
             HostErrorKind::IdentityAlreadyClaimed { .. } | HostErrorKind::Conflict => {
                 ErrorCategory::Conflict
             }
+            // A refused artefact is a conflict rather than bad input: the file
+            // is well formed, and what it collides with is the ledger. Nothing
+            // was written, and re-importing the same file never will be.
+            HostErrorKind::DuplicateSubmission { .. }
+            | HostErrorKind::ModifiedArtifact { .. }
+            | HostErrorKind::CrossParticipantArtifact { .. } => ErrorCategory::Conflict,
             HostErrorKind::Persistence => ErrorCategory::Unexpected,
         }
     }
@@ -238,6 +264,30 @@ impl From<DomainError> for HostError {
             DomainError::InvalidTransition { expected, detected } => {
                 HostErrorKind::InvalidTransition { expected, detected }
             }
+
+            // Remote import refusals. Each keeps its identifiers, because the
+            // Host is looking at their own meeting and the useful next action
+            // differs: a duplicate needs nothing, a modified artefact needs the
+            // file checked, a cross-participant one needs the right form.
+            DomainError::DuplicateSubmission {
+                submission_id,
+                note_version,
+            } => HostErrorKind::DuplicateSubmission {
+                submission_id,
+                note_version,
+            },
+            DomainError::ModifiedArtifact { submission_id } => {
+                HostErrorKind::ModifiedArtifact { submission_id }
+            }
+            DomainError::CrossParticipantArtifact {
+                submission_id,
+                expected,
+                detected,
+            } => HostErrorKind::CrossParticipantArtifact {
+                submission_id,
+                expected,
+                detected,
+            },
             DomainError::Validation {
                 field,
                 expected,
@@ -294,6 +344,7 @@ impl From<app_remote::RemoteError> for HostError {
         match error {
             RemoteError::Malformed { .. }
             | RemoteError::UnsupportedSchema { .. }
+            | RemoteError::TooLarge { .. }
             | RemoteError::MeetingMismatch => Self::new(
                 HostErrorKind::Validation {
                     field: "submission".to_owned(),

@@ -650,3 +650,76 @@ select {
 .remote-form .path {
   color: var(--muted);
 }
+
+/* ---- remote submission import ---- */
+
+.import-paste label {
+  display: block;
+  margin: 0.5rem 0 0;
+}
+
+.import-paste textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.5rem;
+  resize: vertical;
+}
+
+.import-preview,
+.import-result {
+  border-top: 1px dashed var(--border);
+  margin: 0.75rem 0 0;
+  padding: 0.75rem 0 0;
+}
+
+.import-preview h4 {
+  margin: 1rem 0 0.375rem;
+  font-size: 0.9375rem;
+}
+
+.import-preview .facts {
+  margin: 0.5rem 0;
+  display: grid;
+  gap: 0.375rem;
+}
+
+.import-preview .facts > div {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.import-preview dt {
+  flex: 0 0 9rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.import-preview dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.import-note {
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.25rem 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.import-current {
+  margin: 0.75rem 0 0;
+}
+
+.import-current summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.875rem;
+  margin: 0 0 0.375rem;
+}

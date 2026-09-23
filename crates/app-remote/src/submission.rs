@@ -37,6 +37,18 @@ use serde::{Deserialize, Serialize};
 use crate::context::SCHEMA_VERSION;
 use crate::{RemoteError, RemoteResult};
 
+/// Largest complete submission artefact this application will read.
+///
+/// Four times the 64 KiB a note may contain, which leaves room for JSON
+/// escaping of a note made entirely of quotes or backslashes plus the eight
+/// metadata fields around it.
+///
+/// It is a **memory guard, not the note rule**: content that fits here and not
+/// in 64 KiB is refused by `app-core::note`, which can say exactly by how much.
+/// The two numbers do two separate jobs, the way the LAN transport's body limit
+/// and the domain's note limit already do (ADR-0022 decision 16).
+pub const MAX_SUBMISSION_BYTES: usize = 256 * 1024;
+
 /// A parsed remote submission.
 ///
 /// Every field is untrusted. The two identifiers are **candidates** to be
@@ -92,6 +104,16 @@ impl SubmissionV1 {
     /// Untrusted input in, shape out. See the module documentation for what this
     /// deliberately does not check.
     pub fn parse(text: &str) -> RemoteResult<Self> {
+        // Before anything is parsed. A caller that read from a file has already
+        // checked the size; this is the check that also covers pasted text, and
+        // the one that catches a file which grew between `metadata` and `read`.
+        if text.len() > MAX_SUBMISSION_BYTES {
+            return Err(RemoteError::TooLarge {
+                limit: MAX_SUBMISSION_BYTES,
+                detected: text.len() as u64,
+            });
+        }
+
         let raw: RawSubmission =
             serde_json::from_str(text).map_err(|error| RemoteError::Malformed {
                 detail: error.to_string(),

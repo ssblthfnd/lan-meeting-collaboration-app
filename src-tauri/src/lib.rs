@@ -71,12 +71,14 @@ pub mod events;
 pub mod host;
 pub mod lan;
 pub mod qr;
+pub mod remote_import;
 
 pub use error::{ErrorCategory, HostError, HostErrorKind, HostResult};
 pub use events::{TauriEventSink, DOMAIN_EVENT};
 pub use host::{HostState, DATABASE_FILE, REMOTE_FORM_DIRECTORY};
 pub use lan::{LanLifecycle, LanServerStatus};
 pub use qr::QrMatrix;
+pub use remote_import::{PendingImport, REMOTE_SUBMISSION_PENDING};
 
 use std::sync::Arc;
 
@@ -120,7 +122,22 @@ pub fn run() {
                 realtime,
             ));
             app.manage(state);
+
+            // The one pending submission slot. A dropped file's path arrives
+            // here, in Rust, and never reaches the window: what the renderer
+            // gets is a notification that something is waiting (ADR-0022 d17).
+            app.manage(PendingImport::new());
+
             Ok(())
+        })
+        // A file dropped on the Host window. The path is handled in Rust and
+        // is never sent to the renderer; one line here, because `run()` cannot
+        // be tested and everything decidable about a drop is decided in
+        // `remote_import` (ADR-0022 decision 17).
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                remote_import::announce_drop(window.app_handle(), paths);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::create_meeting,
@@ -140,6 +157,10 @@ pub fn run() {
             commands::get_note_version,
             commands::list_notes_overview,
             commands::generate_remote_form,
+            commands::remote_submission_from_text,
+            commands::preview_remote_submission,
+            commands::confirm_remote_submission,
+            commands::clear_remote_submission,
             commands::start_lan_server,
             commands::stop_lan_server,
             commands::lan_server_status,

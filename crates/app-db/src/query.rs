@@ -32,7 +32,7 @@
 //! `SQLITE_OPEN_READ_ONLY`. A write attempted through this path fails at the
 //! SQLite level rather than quietly bypassing the mutation boundary.
 
-use app_core::id::{AuditLogId, MeetingId, NoteId, ParticipantId};
+use app_core::id::{AuditLogId, MeetingId, NoteId, ParticipantId, SubmissionId};
 use app_core::meeting::MeetingStatus;
 use app_core::participant::ParticipantDetails;
 use app_core::session::ClaimStatus;
@@ -80,6 +80,22 @@ pub struct MeetingDetail {
     pub updated_at: UtcTimestamp,
     /// Set exactly when `status` is `LOCKED`, which the schema enforces.
     pub locked_at: Option<UtcTimestamp>,
+}
+
+/// What the ledger already knows about an artefact, for the Host's preview.
+///
+/// Advisory: the import transaction asks the same questions again and is what
+/// decides (ADR-0022 decision 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubmissionLedgerState {
+    /// Never seen for this participant, and not seen under any other.
+    New,
+    /// Seen, with identical canonical content. Import is refused as a duplicate.
+    Duplicate { note_version: i64 },
+    /// Seen, with different canonical content. The artefact was altered.
+    ModifiedArtifact { note_version: i64 },
+    /// Seen under a different participant of the same meeting.
+    CrossParticipant { participant_id: ParticipantId },
 }
 
 /// One participant of a meeting.
@@ -367,6 +383,67 @@ impl<'a> HostQueries<'a> {
                 )
                 .optional()?;
             Ok(row)
+        })
+    }
+
+    /// Whether this artefact has been imported before, and how.
+    ///
+    /// **Advisory.** The transaction runs the same two lookups and is what
+    /// decides; this is so the Host can be told before they confirm rather than
+    /// after they are refused (ADR-0022 decision 4). Between the two, another
+    /// import can land, so a `New` answer here is a report and not a promise.
+    ///
+    /// The per-participant lookup and the cross-participant one are separate
+    /// questions: changing `participant_id` in an artefact changes its canonical
+    /// hash, so the first can never see the second.
+    pub fn remote_submission_state(
+        &self,
+        meeting_id: MeetingId,
+        participant_id: ParticipantId,
+        submission_id: SubmissionId,
+        content_hash: &str,
+    ) -> DbResult<SubmissionLedgerState> {
+        self.db.read(|conn| {
+            let own: Option<(String, i64)> = conn
+                .query_row(
+                    "SELECT content_hash, note_version
+                       FROM remote_submissions
+                      WHERE meeting_id = ?1 AND participant_id = ?2 AND submission_id = ?3
+                        AND note_version IS NOT NULL
+                      ORDER BY imported_at DESC, id DESC
+                      LIMIT 1",
+                    params![Sql(meeting_id), Sql(participant_id), Sql(submission_id)],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+
+            if let Some((stored_hash, note_version)) = own {
+                return Ok(if stored_hash == content_hash {
+                    SubmissionLedgerState::Duplicate { note_version }
+                } else {
+                    SubmissionLedgerState::ModifiedArtifact { note_version }
+                });
+            }
+
+            let foreign: Option<Sql<ParticipantId>> = conn
+                .query_row(
+                    "SELECT participant_id
+                       FROM remote_submissions
+                      WHERE meeting_id = ?1 AND submission_id = ?2 AND participant_id <> ?3
+                        AND note_version IS NOT NULL
+                      ORDER BY imported_at ASC, id ASC
+                      LIMIT 1",
+                    params![Sql(meeting_id), Sql(submission_id), Sql(participant_id)],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
+            Ok(match foreign {
+                Some(other) => SubmissionLedgerState::CrossParticipant {
+                    participant_id: other.into_inner(),
+                },
+                None => SubmissionLedgerState::New,
+            })
         })
     }
 

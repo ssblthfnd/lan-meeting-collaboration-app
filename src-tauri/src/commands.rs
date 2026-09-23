@@ -19,12 +19,14 @@ use crate::dto::{
     MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
     MeetingUpdatedDto, NoteDetailDto, NoteOverviewDto, NoteVersionDetailDto, NoteVersionSummaryDto,
     NoteWrittenDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
-    ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, RemoteFormGeneratedDto,
+    ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, PendingSubmissionDto,
+    RemoteFormGeneratedDto, RemoteSubmissionImportedDto, RemoteSubmissionPreviewDto,
     SessionChangedDto,
 };
 use crate::error::{HostError, HostErrorKind, HostResult};
 use crate::host::{HostState, REMOTE_FORM_DIRECTORY};
 use crate::lan::{LanLifecycle, LanServerStatus};
+use crate::remote_import::PendingImport;
 
 /* -------------------------------------------------------------------------
  * Meetings
@@ -274,6 +276,77 @@ pub fn generate_remote_form(
         .join(REMOTE_FORM_DIRECTORY);
 
     state.generate_remote_form(&meeting_id, &participant_id, &directory)
+}
+
+/* -------------------------------------------------------------------------
+ * Remote submission import
+ *
+ * Four commands, and none of them takes an artefact or a path. The bytes live
+ * in `PendingImport` - put there by Rust when a file is dropped, or by
+ * `remote_submission_from_text` when the Host pastes - and both preview and
+ * confirmation read them from there.
+ *
+ * That is the trust boundary, expressed as a signature: a window that cannot
+ * name a file cannot read an arbitrary one, and a window that cannot hand back
+ * an artefact cannot confirm one the Host never saw (ADR-0022 decision 4).
+ * ------------------------------------------------------------------------- */
+
+/// Take pasted submission text as the pending artefact.
+///
+/// Text is data rather than a filesystem path, so it may come from the window.
+/// It is bounded by the same 256 KiB limit a dropped file is, and it is stored
+/// in Rust exactly as a dropped file would be - confirmation reads it from
+/// there, never from a second call.
+#[tauri::command(rename_all = "snake_case")]
+pub fn remote_submission_from_text(
+    pending: State<'_, PendingImport>,
+    text: String,
+) -> HostResult<PendingSubmissionDto> {
+    let artifact = pending.accept_text(text)?;
+    Ok(PendingSubmissionDto {
+        bytes: artifact.raw.len(),
+        origin: artifact.origin,
+    })
+}
+
+/// Everything the Host should see before deciding whether to import.
+///
+/// Read-only. Nothing it reports is authority: the import transaction asks the
+/// database again and is what decides.
+#[tauri::command(rename_all = "snake_case")]
+pub fn preview_remote_submission(
+    state: State<'_, HostState>,
+    pending: State<'_, PendingImport>,
+    meeting_id: String,
+) -> HostResult<RemoteSubmissionPreviewDto> {
+    let artifact = pending.require()?;
+    state.preview_remote_submission(&meeting_id, &artifact.raw, &artifact.origin)
+}
+
+/// Import the pending submission into the Host-selected meeting.
+///
+/// Takes no artefact: it uses the exact bytes that were previewed. Every
+/// security-critical check runs again, inside the domain's own transaction.
+#[tauri::command(rename_all = "snake_case")]
+pub fn confirm_remote_submission(
+    state: State<'_, HostState>,
+    pending: State<'_, PendingImport>,
+    meeting_id: String,
+) -> HostResult<RemoteSubmissionImportedDto> {
+    let artifact = pending.require()?;
+    let imported = state.import_remote_submission(&meeting_id, &artifact.raw)?;
+
+    // Only after the domain committed. A refusal leaves the artefact pending so
+    // the Host can look at it again.
+    pending.clear();
+    Ok(imported)
+}
+
+/// Forget whatever submission was waiting.
+#[tauri::command(rename_all = "snake_case")]
+pub fn clear_remote_submission(pending: State<'_, PendingImport>) -> HostResult<()> {
+    pending.clear();
+    Ok(())
 }
 
 /* -------------------------------------------------------------------------

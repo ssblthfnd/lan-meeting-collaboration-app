@@ -29,7 +29,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { HOST_DOMAIN_EVENT } from '@lan-meeting/contracts';
+import { HOST_DOMAIN_EVENT, REMOTE_SUBMISSION_PENDING } from '@lan-meeting/contracts';
 import type {
   AuditEntry,
   HostDomainEvent,
@@ -56,7 +56,11 @@ import type {
   ParticipantRemoved,
   ParticipantSummary,
   ParticipantUpdated,
+  PendingSubmission,
   RemoteFormGenerated,
+  RemoteSubmissionImported,
+  RemoteSubmissionPendingEvent,
+  RemoteSubmissionPreview,
   SessionChanged,
 } from '@lan-meeting/contracts';
 
@@ -363,6 +367,79 @@ export function generateRemoteForm(
   return call<RemoteFormGenerated>('generate_remote_form', {
     meeting_id: meetingId,
     participant_id: participantId,
+  });
+}
+
+/* -------------------------------------------------------------------------
+ * Remote submission import
+ *
+ * None of these takes an artefact or a filesystem path. The bytes live in Rust
+ * - put there when a file is dropped on this window, or by
+ * `remoteSubmissionFromText` when the Host pastes - and both preview and
+ * confirmation read them from there.
+ *
+ * That is the trust boundary expressed as a signature: a window that cannot
+ * name a file cannot read an arbitrary one, and a window that cannot hand back
+ * an artefact cannot confirm one the Host never saw (ADR-0022 decision 4).
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Take pasted submission text as the pending artefact.
+ *
+ * Text is data rather than a path, so it may come from here. It is bounded by
+ * the same 256 KiB limit a dropped file is.
+ */
+export function remoteSubmissionFromText(text: string): Promise<PendingSubmission> {
+  return call<PendingSubmission>('remote_submission_from_text', { text });
+}
+
+/**
+ * Everything to show the Host before they decide.
+ *
+ * Read-only, and **not authority**. A meeting can be locked, a participant
+ * removed and the note changed between this and a confirmation; the import
+ * transaction asks the database again and is what decides.
+ */
+export function previewRemoteSubmission(
+  meetingId: MeetingId,
+): Promise<RemoteSubmissionPreview> {
+  return call<RemoteSubmissionPreview>('preview_remote_submission', {
+    meeting_id: meetingId,
+  });
+}
+
+/**
+ * Import the pending submission into this meeting.
+ *
+ * Takes no artefact: the backend uses the exact bytes that were previewed, and
+ * re-runs every security-critical check inside one transaction. The note, its
+ * version, the idempotency ledger row and the audit entry commit together or
+ * not at all.
+ */
+export function confirmRemoteSubmission(
+  meetingId: MeetingId,
+): Promise<RemoteSubmissionImported> {
+  return call<RemoteSubmissionImported>('confirm_remote_submission', {
+    meeting_id: meetingId,
+  });
+}
+
+/** Forget whatever submission was waiting. */
+export function clearRemoteSubmission(): Promise<void> {
+  return call<void>('clear_remote_submission');
+}
+
+/**
+ * Call `onPending` whenever a submission file is dropped on this window.
+ *
+ * The payload carries a name and a size, never a filesystem path: the path is
+ * handled in Rust and the window is told only that something arrived.
+ */
+export async function onRemoteSubmissionPending(
+  onPending: (event: RemoteSubmissionPendingEvent) => void,
+): Promise<() => void> {
+  return listen<RemoteSubmissionPendingEvent>(REMOTE_SUBMISSION_PENDING, (event) => {
+    onPending(event.payload);
   });
 }
 
