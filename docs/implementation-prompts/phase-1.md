@@ -111,8 +111,8 @@ These apply to every step in this file.
 | Step 8 | Host note editing & version history | COMPLETE | `27349ec` |
 | Step 8B | Participant note editing over LAN | COMPLETE | `120a9c5` |
 | Step 9 | Remote form generation | COMPLETE | `e867bdc` |
-| Step 10 | Remote submission import pipeline | COMPLETE | uncommitted |
-| Step 11 | Meeting lock | PLANNED | — |
+| Step 10 | Remote submission import pipeline | COMPLETE | `4d646b6` |
+| Step 11 | Meeting lock | COMPLETE | uncommitted |
 | Step 12 | Export: Markdown and TXT / AI Context | PLANNED | — |
 
 ### Numbering note
@@ -1981,15 +1981,30 @@ compatibility defect is proven.
 
 ## Step 11 — Meeting Lock
 
-**Status: PLANNED**
+**Status: COMPLETE** (uncommitted)
 
 From `README.md` roadmap item 11 and PRD section 19.
 
-Intended scope: expose the already-implemented `Domain::lock_meeting` through
-the Host command surface, with the irreversibility made clear in the UI. The
-domain rule, the audit record and the `meeting.locked` event already exist.
+A read-only design inspection preceded implementation and was frozen in
+`docs/implementation-prompts/step-11-meeting-lock.md` before any code changed.
 
-Details beyond the above are **TBD**.
+Scope: exposed the already-implemented `Domain::lock_meeting` through the Host
+Tauri command surface (`host.rs` → `commands.rs` → `lib.rs`, moving the
+registered-command / gateway parity guard from 28 to 29) and through the Host
+UI (`hostApi.lockMeeting`, and a two-step in-component confirmation on
+`MeetingDetailView` shown only while a meeting is `OPEN`). No domain, schema,
+contract, DTO, error, event or LAN protocol change was needed or made - the
+lock rule, its transaction, its audit record and its event already existed and
+already worked; this step only made the Host able to reach them.
+
+Test coverage added: command-layer coverage for a successful lock, the
+`DRAFT -> LOCKED` refusal, the `LOCKED -> LOCKED` refusal, an unknown meeting,
+a malformed identifier, and the exactly-one `meeting.locked` audit entry
+(`src-tauri/tests/host_commands.rs`); explicit authorization coverage proving
+`Actor::RemoteImport` cannot perform `Operation::LockMeeting`
+(`crates/app-core/src/authz.rs`). The existing locked-mutation command-layer
+test now reaches `LOCKED` through the new command instead of calling
+`Domain::lock_meeting` directly.
 
 ---
 
@@ -2017,19 +2032,21 @@ Details beyond the above are **TBD**.
 
 ## Current Execution Point
 
-> Phase 1 is complete and pushed through Step 9. **Step 10 — Remote Submission
-> Import — is implemented and awaiting review in the working tree.** Step 11 —
-> Meeting Lock — is the next implementation step and must be executed
-> separately.
+> Phase 1 is complete and pushed through Step 10. **Step 11 — Meeting Lock —
+> is implemented and awaiting review in the working tree.** Step 12 — Export —
+> is the next implementation step and must be executed separately.
 
 Repository state:
 
-- branch `main`, `HEAD` = `e867bdc9b81a2e8138039856ff5f53ddffd54f58`
-- Steps 0 through 9 committed and pushed; Step 10 changes are uncommitted
+- branch `main`, `HEAD` = `4d646b621b220f0c30545d627665096539e6db8a`
+- Steps 0 through 10 committed and pushed; Step 11 changes are uncommitted
 - Rust and TypeScript suites both passing
-- no migration exists beyond `V1` and `V2`; neither Step 9 nor Step 10 added one
+- no migration exists beyond `V1` and `V2`; neither Step 10 nor Step 11 added
+  one
 
-The remote participation loop is now closed end to end: a Host generates an
+The remote participation loop is closed end to end: a Host generates an
 offline form, a participant fills it in and exports a submission, and the Host
-previews and imports it back into that participant's single note. What remains
-in Phase 1 is the meeting lock command (Step 11) and export (Step 12).
+previews and imports it back into that participant's single note. The Host can
+now also lock a meeting, which is irreversible and refuses every mutation
+already covered by the domain's `ensure_mutable()` gates. What remains in
+Phase 1 is export (Step 12).

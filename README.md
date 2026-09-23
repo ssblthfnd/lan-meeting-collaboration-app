@@ -17,9 +17,10 @@ Everything is stored in a local SQLite database on the Host device.
 > editor; the Host sees every note, can edit any of them, and can read the full
 > version history. Both sides update themselves in realtime. For someone who
 > cannot reach the network, the Host generates a single offline HTML form that
-> the participant fills in and exports as a submission file. Reading those
-> submissions back, note links, the meeting lock and export are not implemented
-> yet. See [Roadmap](#roadmap).
+> the participant fills in and exports as a submission file, and the Host
+> reads it back into that participant's note. The Host can lock a meeting,
+> ending editing for everyone with no way back. Note links and export are not
+> implemented yet. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -131,8 +132,8 @@ Phase 1 is built in order, each step independently demonstrable:
 8. Host note editing and version history
 8B. Participant note editing over the LAN
 9. Remote form generation
-10. Remote submission import pipeline *(current)*
-11. Meeting lock
+10. Remote submission import pipeline
+11. Meeting lock *(current)*
 12. Export: Markdown and TXT / AI Context
 
 PDF export is Phase 2 by decision - see

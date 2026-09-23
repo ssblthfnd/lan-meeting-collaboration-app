@@ -119,6 +119,11 @@ export function openMeeting(meetingId: MeetingId): Promise<MeetingTransitioned> 
   return call<MeetingTransitioned>('open_meeting', { meeting_id: meetingId });
 }
 
+/** Move a meeting from `OPEN` to `LOCKED`. There is no unlock. */
+export function lockMeeting(meetingId: MeetingId): Promise<MeetingTransitioned> {
+  return call<MeetingTransitioned>('lock_meeting', { meeting_id: meetingId });
+}
+
 /* -------------------------------------------------------------------------
  * Participants
  * ------------------------------------------------------------------------- */

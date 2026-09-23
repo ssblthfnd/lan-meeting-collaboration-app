@@ -143,6 +143,7 @@ pub fn run() {
             commands::create_meeting,
             commands::update_meeting,
             commands::open_meeting,
+            commands::lock_meeting,
             commands::list_meetings,
             commands::get_meeting,
             commands::add_participant,

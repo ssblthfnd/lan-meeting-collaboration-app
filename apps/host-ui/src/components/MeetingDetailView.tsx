@@ -36,6 +36,7 @@ export function MeetingDetailView({
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<HostError | null>(null);
+  const [confirmingLock, setConfirmingLock] = useState(false);
 
   if (meeting.error) {
     return (
@@ -80,6 +81,20 @@ export function MeetingDetailView({
     setError(null);
     try {
       await hostApi.openMeeting(meetingId);
+      refresh();
+    } catch (rejection) {
+      setError(rejection as HostError);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function lock() {
+    setBusy(true);
+    setError(null);
+    try {
+      await hostApi.lockMeeting(meetingId);
+      setConfirmingLock(false);
       refresh();
     } catch (rejection) {
       setError(rejection as HostError);
@@ -229,6 +244,40 @@ export function MeetingDetailView({
                 </span>
               </div>
             )}
+
+            {detail.status === 'OPEN' &&
+              (confirmingLock ? (
+                <div className="actions">
+                  <button type="button" className="primary" disabled={busy} onClick={() => void lock()}>
+                    {busy ? 'Working…' : 'Yes, lock this meeting'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setConfirmingLock(false)}
+                  >
+                    Cancel
+                  </button>
+                  <span className="meta">
+                    Locking ends editing for you and every participant, and remote
+                    submissions can no longer be imported. This cannot be undone.
+                  </span>
+                </div>
+              ) : (
+                <div className="actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={busy}
+                    onClick={() => setConfirmingLock(true)}
+                  >
+                    Lock meeting
+                  </button>
+                  <span className="meta">
+                    Locking ends editing for everyone and cannot be undone.
+                  </span>
+                </div>
+              ))}
           </section>
         ))}
 

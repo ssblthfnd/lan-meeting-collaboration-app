@@ -33,11 +33,6 @@
 //!
 //! # What is deliberately not here
 //!
-//! The domain also offers `lock_meeting`, and it is not exposed: locking is
-//! irreversible and belongs with the flow that precedes it. Listing the
-//! omission is the point - adding the command should be a deliberate act
-//! rather than a gap someone fills in passing.
-//!
 //! Restoring a note version is not here either, and not anywhere: version
 //! history is view-only in step 8 (ADR-0019). There is no restore command, no
 //! restore operation and no restore audit action to reach for.
@@ -201,6 +196,13 @@ impl HostState {
     pub fn open_meeting(&self, meeting_id: &str) -> HostResult<MeetingTransitionedDto> {
         let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
         let outcome = self.domain.open_meeting(&Actor::Host, meeting_id)?;
+        Ok(outcome.into())
+    }
+
+    /// Move a meeting from `OPEN` to `LOCKED`.
+    pub fn lock_meeting(&self, meeting_id: &str) -> HostResult<MeetingTransitionedDto> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let outcome = self.domain.lock_meeting(&Actor::Host, meeting_id)?;
         Ok(outcome.into())
     }
 

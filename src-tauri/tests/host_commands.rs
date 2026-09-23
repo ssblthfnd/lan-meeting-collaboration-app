@@ -479,13 +479,9 @@ fn a_locked_meeting_refuses_through_the_command_layer_too() {
     let meeting_id = host.draft();
     host.state.open_meeting(&meeting_id).unwrap();
 
-    // Locking is not exposed as a command on purpose (it is not part of this
-    // step), so the domain is used directly to reach the LOCKED state.
-    let parsed = app_core::id::MeetingId::parse(&meeting_id).unwrap();
-    host.state
-        .domain()
-        .lock_meeting(&app_core::actor::Actor::Host, parsed)
-        .unwrap();
+    // Locking is now exposed as a command (Step 11), so it is reached the same
+    // way a real Host would reach it: through the command layer.
+    host.state.lock_meeting(&meeting_id).unwrap();
 
     let error = host
         .state
@@ -505,6 +501,152 @@ fn a_locked_meeting_refuses_through_the_command_layer_too() {
     let detail = host.state.get_meeting(&meeting_id).unwrap();
     assert_eq!(detail.status.as_str(), "LOCKED");
     assert!(detail.locked_at.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// 11. Locking a meeting through the command layer (Step 11)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn locking_an_open_meeting_through_the_command_layer_succeeds() {
+    let host = Host::new();
+    let meeting_id = host.draft();
+    host.state.open_meeting(&meeting_id).unwrap();
+
+    let transitioned = host.state.lock_meeting(&meeting_id).unwrap();
+    let json = as_json(&transitioned);
+    assert_eq!(json["from"], "OPEN");
+    assert_eq!(json["to"], "LOCKED");
+    let at = json["at"].as_str().expect("at").to_owned();
+
+    let detail = host.state.get_meeting(&meeting_id).unwrap();
+    assert_eq!(detail.status.as_str(), "LOCKED");
+    let locked_at = detail.locked_at.expect("locked_at set");
+    assert_eq!(as_json(&locked_at).as_str().expect("locked_at"), at);
+}
+
+#[test]
+fn locking_a_draft_meeting_is_rejected_as_an_invalid_transition() {
+    let host = Host::new();
+    let meeting_id = host.draft();
+
+    let error = host.state.lock_meeting(&meeting_id).unwrap_err();
+    let json = as_json(&error);
+    assert_eq!(json["kind"], "invalid_transition");
+    assert_eq!(error.category, ErrorCategory::Lifecycle);
+
+    let detail = host.state.get_meeting(&meeting_id).unwrap();
+    assert_eq!(detail.status.as_str(), "DRAFT");
+    assert_eq!(detail.locked_at, None);
+    assert_eq!(host.state.list_audit_entries(&meeting_id).unwrap().len(), 1);
+}
+
+#[test]
+fn locking_an_already_locked_meeting_is_rejected_as_meeting_locked() {
+    let host = Host::new();
+    let meeting_id = host.draft();
+    host.state.open_meeting(&meeting_id).unwrap();
+    host.state.lock_meeting(&meeting_id).unwrap();
+
+    let before = host
+        .state
+        .get_meeting(&meeting_id)
+        .unwrap()
+        .locked_at
+        .expect("already locked");
+
+    let error = host.state.lock_meeting(&meeting_id).unwrap_err();
+    let json = as_json(&error);
+    assert_eq!(json["kind"], "meeting_locked");
+    assert!(json["message"]
+        .as_str()
+        .expect("message")
+        .contains("Weekly Coordination"));
+
+    let after = host
+        .state
+        .get_meeting(&meeting_id)
+        .unwrap()
+        .locked_at
+        .expect("still locked");
+    assert_eq!(before, after);
+}
+
+#[test]
+fn locking_an_unknown_meeting_is_reported_as_not_found() {
+    let host = Host::new();
+    let ghost = app_core::id::MeetingId::new().to_storage();
+
+    let error = host.state.lock_meeting(&ghost).unwrap_err();
+    assert_eq!(error.category, ErrorCategory::NotFound);
+    assert!(matches!(error.kind, HostErrorKind::MeetingNotFound { .. }));
+}
+
+#[test]
+fn locking_with_a_malformed_meeting_id_is_refused_before_the_domain() {
+    let host = Host::new();
+
+    let error = host.state.lock_meeting("not-a-uuid").unwrap_err();
+    assert_eq!(error.category, ErrorCategory::Validation);
+    let json = as_json(&error);
+    assert_eq!(json["field"], "meeting id");
+    assert_eq!(json["detected"], "not-a-uuid");
+}
+
+#[test]
+fn a_successful_lock_writes_exactly_one_audit_entry() {
+    let host = Host::new();
+    let meeting_id = host.draft();
+    host.state.open_meeting(&meeting_id).unwrap();
+
+    let before = host.state.list_audit_entries(&meeting_id).unwrap().len();
+    host.state.lock_meeting(&meeting_id).unwrap();
+    let entries = host.state.list_audit_entries(&meeting_id).unwrap();
+
+    let locked: Vec<_> = entries
+        .iter()
+        .filter(|e| e.action.as_str() == "meeting.locked")
+        .collect();
+    assert_eq!(locked.len(), 1);
+    assert_eq!(entries.len(), before + 1);
+
+    let metadata = as_json(&locked[0])["metadata"].clone();
+    assert_eq!(metadata["from"], "OPEN");
+    assert_eq!(metadata["to"], "LOCKED");
+}
+
+#[test]
+fn a_remote_import_actor_cannot_lock_a_meeting() {
+    // Command-layer coverage complementing the authorization-suite proof in
+    // app-core: there is no command surface through which RemoteImport could
+    // reach LockMeeting, and the domain itself refuses it (D8).
+    let host = Host::new();
+    let meeting_id = host.draft();
+    host.state.open_meeting(&meeting_id).unwrap();
+    let parsed = app_core::id::MeetingId::parse(&meeting_id).unwrap();
+
+    let error = host
+        .state
+        .domain()
+        .lock_meeting(
+            &app_core::actor::Actor::RemoteImport {
+                meeting_id: parsed,
+                participant_id: app_core::id::ParticipantId::new(),
+            },
+            parsed,
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        app_core::error::DomainError::Forbidden {
+            actor_type: "REMOTE_IMPORT",
+            ..
+        }
+    ));
+
+    let detail = host.state.get_meeting(&meeting_id).unwrap();
+    assert_eq!(detail.status.as_str(), "OPEN");
+    assert_eq!(detail.locked_at, None);
 }
 
 // ---------------------------------------------------------------------------

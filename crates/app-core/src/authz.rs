@@ -374,6 +374,28 @@ mod tests {
     }
 
     #[test]
+    fn a_remote_import_may_not_lock_the_meeting() {
+        // Locking is irreversible and Host-only; an import carries only the
+        // authority of the participant whose submission it is, which does not
+        // extend to the meeting's lifecycle.
+        let meeting_id = MeetingId::new();
+        let actor = Actor::RemoteImport {
+            meeting_id,
+            participant_id: ParticipantId::new(),
+        };
+
+        let err = authorize(&actor, meeting_id, Operation::LockMeeting).unwrap_err();
+        assert_eq!(
+            err,
+            DomainError::Forbidden {
+                actor_type: "REMOTE_IMPORT",
+                action: Operation::LockMeeting.action(),
+                target: Operation::LockMeeting.target(),
+            }
+        );
+    }
+
+    #[test]
     fn creating_a_meeting_is_not_something_a_participant_has_standing_for() {
         // A create is scoped to an id that does not exist yet, so a participant
         // session - which is bound to one existing meeting (ADR-0002) - is not

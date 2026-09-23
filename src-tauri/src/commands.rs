@@ -58,6 +58,14 @@ pub fn open_meeting(
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub fn lock_meeting(
+    state: State<'_, HostState>,
+    meeting_id: String,
+) -> HostResult<MeetingTransitionedDto> {
+    state.lock_meeting(&meeting_id)
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub fn list_meetings(state: State<'_, HostState>) -> HostResult<Vec<MeetingSummaryDto>> {
     state.list_meetings()
 }
