@@ -76,9 +76,7 @@ dependencies = [
 name = "app-export"
 version = "0.1.0"
 dependencies = [
- "app-core",
- "app-db",
- "thiserror 2.0.20",
+ "serde_json",
 ]
 
 [[package]]
@@ -2028,6 +2026,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

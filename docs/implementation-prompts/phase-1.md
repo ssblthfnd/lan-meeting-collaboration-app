@@ -112,8 +112,8 @@ These apply to every step in this file.
 | Step 8B | Participant note editing over LAN | COMPLETE | `120a9c5` |
 | Step 9 | Remote form generation | COMPLETE | `e867bdc` |
 | Step 10 | Remote submission import pipeline | COMPLETE | `4d646b6` |
-| Step 11 | Meeting lock | COMPLETE | uncommitted |
-| Step 12 | Export: Markdown and TXT / AI Context | PLANNED | — |
+| Step 11 | Meeting lock | COMPLETE | `a9ef7f8` |
+| Step 12 | Export: Markdown and TXT / AI Context | COMPLETE | uncommitted |
 
 ### Numbering note
 
@@ -2010,43 +2010,67 @@ test now reaches `LOCKED` through the new command instead of calling
 
 ## Step 12 — Export: Markdown and TXT / AI Context
 
-**Status: PLANNED**
+**Status: COMPLETE** (uncommitted)
 
-From `README.md` roadmap item 12, PRD sections 20 and 21, ADR-0004 and
-architecture rules section 19.
+From `README.md` roadmap item 12, PRD sections 6, 16, 20, 21 and 25.4,
+ADR-0004, ADR-0023 and architecture rules sections 17, 19, 19.1 and 21.
 
-Intended scope: deterministic renderers in `crates/app-export`. Export states the
-meeting timezone explicitly, uses explicit total ordering everywhere, and
-preserves meeting metadata, participants, notes, links, timestamps and relevant
-audit information. AI Context only formats and structures — no summarization,
-inference or interpretation, and no AI API anywhere. **PDF is Phase 2 by
-decision and no PDF dependency may be added during Phase 1.**
+A read-only design inspection, an explicit resolution of eight material
+ambiguities, and four corrections to that resolution all preceded
+implementation and are recorded in ADR-0023 before any code changed.
 
-This is also where the Rust Markdown renderer lands, and where the shared
-fixtures created in Step 8 get their second consumer, satisfying ADR-0007's
-requirement that the TypeScript and Rust renderers agree on the same subset.
+Scope delivered: `crates/app-export` is a pure rendering layer (no
+filesystem, database, Tauri or authorization dependency) producing
+deterministic Markdown, TXT and AI Context documents from a plain
+`ExportDocument`. This is where the Rust Markdown renderer lands - a bounded
+parser (`markdown_ast`) mirroring `packages/editor/src/parse.ts`'s subset,
+feeding a plain-text tree-walk (`plain_text`) held to the same
+`packages/editor/__fixtures__/notes.json` fixture oracle the TypeScript side
+already uses, satisfying ADR-0007's requirement that the two renderers agree
+on one subset.
 
-Details beyond the above are **TBD**.
+Export is permitted from `OPEN` and `LOCKED`, refused from `DRAFT`, enforced
+twice - a cheap read-only gate before rendering (`HostState::
+check_export_eligible`) and the actual transactional enforcement inside a
+new, audit-only `Domain::record_export` (new `Operation::GenerateExport`,
+new `AuditAction::MeetingExported` -> `"meeting.exported"`). The filesystem
+write and the audit write are not atomic, and no distributed-transaction
+mechanism was introduced to fake it (ADR-0023 decision 2). AI Context
+performs no heading recognition or semantic classification of any kind - the
+PRD's "distinguish discussion/decision/action item" is satisfied as a side
+effect of faithful structural preservation, never by inspecting a heading's
+text. Exported files never contain `generated_at`, a participant id, a claim
+status or any session material.
+
+No migration, no new Tauri capability, no CSP change, no new LAN route or
+WebSocket message, and no third-party Markdown/PDF dependency. **PDF remains
+Phase 2 by decision (ADR-0004), unchanged.**
 
 ---
 
 ## Current Execution Point
 
 > Phase 1 is complete and pushed through Step 10. **Step 11 — Meeting Lock —
-> is implemented and awaiting review in the working tree.** Step 12 — Export —
-> is the next implementation step and must be executed separately.
+> is committed locally, not yet pushed. Step 12 — Export — is implemented
+> and awaiting review in the working tree.** Phase 1's MVP scope (PRD section
+> 24) is now functionally complete; only documentation review, validation and
+> the commit/push of Steps 11 and 12 remain.
 
 Repository state:
 
-- branch `main`, `HEAD` = `4d646b621b220f0c30545d627665096539e6db8a`
-- Steps 0 through 10 committed and pushed; Step 11 changes are uncommitted
+- branch `main`, `HEAD` = `a9ef7f8bbd51509cef70928092f5a74df71956f8`
+  (`feat: expose meeting lock to host`)
+- Steps 0 through 11 committed; Step 11 not yet pushed to `origin/main`;
+  Step 12 changes are uncommitted
 - Rust and TypeScript suites both passing
-- no migration exists beyond `V1` and `V2`; neither Step 10 nor Step 11 added
+- no migration exists beyond `V1` and `V2`; neither Step 10, 11 nor 12 added
   one
 
 The remote participation loop is closed end to end: a Host generates an
 offline form, a participant fills it in and exports a submission, and the Host
-previews and imports it back into that participant's single note. The Host can
-now also lock a meeting, which is irreversible and refuses every mutation
-already covered by the domain's `ensure_mutable()` gates. What remains in
-Phase 1 is export (Step 12).
+previews and imports it back into that participant's single note. The Host
+can lock a meeting, which is irreversible and refuses every mutation already
+covered by the domain's `ensure_mutable()` gates, and can now export the
+meeting record as Markdown, TXT or AI Context from `OPEN` or `LOCKED`. What
+remains in Phase 1 is committing and pushing Steps 11 and 12; PDF export
+stays deferred to Phase 2 (ADR-0004).

@@ -70,9 +70,9 @@ pub use port::{
     NewSession, NoteRow, ParticipantRow, SubmissionRecord, SubmissionResolution,
 };
 pub use service::{
-    Domain, IdentityClaimed, ImportSubmission, JoinTokenIssued, MeetingCreated,
-    MeetingTransitioned, MeetingUpdated, NoteWritten, ParticipantAdded, ParticipantRemoved,
-    ParticipantUpdated, SessionChanged, SubmissionImported, WriteNote,
+    Domain, ExportFormat, ExportRecorded, IdentityClaimed, ImportSubmission, JoinTokenIssued,
+    MeetingCreated, MeetingTransitioned, MeetingUpdated, NoteWritten, ParticipantAdded,
+    ParticipantRemoved, ParticipantUpdated, SessionChanged, SubmissionImported, WriteNote,
 };
 pub use session::{ClaimStatus, SessionBinding};
 pub use time::{MeetingDate, MeetingTime, MeetingTimeZone, TimeError, UtcTimestamp};

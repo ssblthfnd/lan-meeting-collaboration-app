@@ -62,6 +62,11 @@ pub enum AuditAction {
     /// submission's own identity travels in the metadata, so the ledger and the
     /// audit trail can be read against each other (ADR-0022 decision 14).
     RemoteSubmissionImported,
+    /// A Markdown/TXT/AI Context export was generated and written to disk
+    /// (Step 12). One record per successful export - repeated exports are
+    /// never deduplicated, unlike a remote submission's ledger, because
+    /// export writes no note there could be a duplicate copy of.
+    MeetingExported,
 }
 
 impl AuditAction {
@@ -83,6 +88,7 @@ impl AuditAction {
             AuditAction::NoteCreated => "note.created",
             AuditAction::NoteUpdated => "note.updated",
             AuditAction::RemoteSubmissionImported => "remote_submission.imported",
+            AuditAction::MeetingExported => "meeting.exported",
         }
     }
 }
@@ -186,6 +192,7 @@ mod tests {
             AuditAction::ParticipantSessionRevoked.as_str(),
             "participant.session_revoked"
         );
+        assert_eq!(AuditAction::MeetingExported.as_str(), "meeting.exported");
     }
 
     #[test]

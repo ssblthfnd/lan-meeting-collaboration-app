@@ -33,6 +33,11 @@ pub enum Operation {
     OpenMeeting,
     /// Move a meeting from `OPEN` to `LOCKED`.
     LockMeeting,
+    /// Render and record a Markdown/TXT/AI Context export of a meeting
+    /// that is `OPEN` or `LOCKED`. Read-only with respect to the meeting
+    /// itself; the only write it authorizes is the audit row that records
+    /// it happened (Step 12).
+    GenerateExport,
     /// Add a participant to a `DRAFT` meeting's roster.
     AddParticipant,
     /// Change a participant's details.
@@ -60,6 +65,7 @@ impl Operation {
             Operation::UpdateMeeting => "change meeting configuration",
             Operation::OpenMeeting => "open a meeting",
             Operation::LockMeeting => "lock a meeting",
+            Operation::GenerateExport => "generate an export",
             Operation::AddParticipant => "add a participant",
             Operation::UpdateParticipant => "change a participant",
             Operation::RemoveParticipant => "remove a participant",
@@ -77,6 +83,7 @@ impl Operation {
             | Operation::UpdateMeeting
             | Operation::OpenMeeting
             | Operation::LockMeeting
+            | Operation::GenerateExport
             | Operation::IssueJoinToken => "the meeting",
             Operation::AddParticipant
             | Operation::UpdateParticipant
@@ -263,11 +270,12 @@ mod tests {
 
     /// Every operation except writing a note, which is the only one a
     /// participant can ever be approved for.
-    const HOST_ONLY: [Operation; 6] = [
+    const HOST_ONLY: [Operation; 7] = [
         Operation::CreateMeeting,
         Operation::UpdateMeeting,
         Operation::OpenMeeting,
         Operation::LockMeeting,
+        Operation::GenerateExport,
         Operation::AddParticipant,
         Operation::UpdateParticipant,
     ];
@@ -391,6 +399,28 @@ mod tests {
                 actor_type: "REMOTE_IMPORT",
                 action: Operation::LockMeeting.action(),
                 target: Operation::LockMeeting.target(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_remote_import_may_not_generate_an_export() {
+        // Generating an export is Host-only, like locking: an import carries
+        // only the authority of the participant whose submission it is,
+        // which does not extend to producing a meeting-wide document.
+        let meeting_id = MeetingId::new();
+        let actor = Actor::RemoteImport {
+            meeting_id,
+            participant_id: ParticipantId::new(),
+        };
+
+        let err = authorize(&actor, meeting_id, Operation::GenerateExport).unwrap_err();
+        assert_eq!(
+            err,
+            DomainError::Forbidden {
+                actor_type: "REMOTE_IMPORT",
+                action: Operation::GenerateExport.action(),
+                target: Operation::GenerateExport.target(),
             }
         );
     }

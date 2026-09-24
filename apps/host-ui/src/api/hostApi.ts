@@ -32,6 +32,8 @@ import { listen } from '@tauri-apps/api/event';
 import { HOST_DOMAIN_EVENT, REMOTE_SUBMISSION_PENDING } from '@lan-meeting/contracts';
 import type {
   AuditEntry,
+  ExportFormat,
+  ExportGenerated,
   HostDomainEvent,
   HostError,
   JoinTokenIssued,
@@ -372,6 +374,33 @@ export function generateRemoteForm(
   return call<RemoteFormGenerated>('generate_remote_form', {
     meeting_id: meetingId,
     participant_id: participantId,
+  });
+}
+
+/* -------------------------------------------------------------------------
+ * Export (Step 12)
+ *
+ * A meeting record as Markdown, TXT or AI Context. Read-only with respect to
+ * the meeting itself; the backend records that it happened in the audit log,
+ * but nothing here decides whether it may - the command rejects a `DRAFT`
+ * meeting exactly as every other lifecycle refusal does.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Render one export format and write it to disk.
+ *
+ * The window never chooses or sees the destination path: the backend
+ * resolves it under the application's own data folder and returns the
+ * absolute path it wrote, the same way {@link generateRemoteForm} already
+ * does (ADR-0021 decision 10).
+ */
+export function generateExport(
+  meetingId: MeetingId,
+  format: ExportFormat,
+): Promise<ExportGenerated> {
+  return call<ExportGenerated>('generate_export', {
+    meeting_id: meetingId,
+    format,
   });
 }
 

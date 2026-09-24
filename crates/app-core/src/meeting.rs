@@ -238,6 +238,27 @@ impl Meeting {
         }
     }
 
+    /// Refuse unless there is a settled meeting to produce a document about.
+    ///
+    /// The mirror of [`Meeting::ensure_open`] with a wider acceptance: export
+    /// is permitted from `OPEN` **and** `LOCKED` (PRD section 6 explicitly
+    /// does not require an `EXPORTED` database status, and nothing in the
+    /// PRD or architecture rules restricts export to `LOCKED` alone), and
+    /// refused only from `DRAFT`, whose roster and configuration are not yet
+    /// settled (ADR-0013). Reuses [`DomainError::MeetingNotOpen`] rather than
+    /// adding a variant - `OPEN` is one of the two statuses this accepts, so
+    /// the message remains accurate even though it does not separately name
+    /// `LOCKED` (Step 12 design freeze, E-3).
+    pub fn ensure_exportable(&self) -> DomainResult<()> {
+        match self.status {
+            MeetingStatus::Open | MeetingStatus::Locked => Ok(()),
+            detected => Err(DomainError::MeetingNotOpen {
+                meeting_id: self.id,
+                detected,
+            }),
+        }
+    }
+
     /// Validate a lifecycle transition against the *current* status.
     ///
     /// Only the two transitions PRD section 6 defines are legal, and each is
@@ -355,6 +376,22 @@ mod tests {
             assert!(message.contains("DRAFT"), "{message}");
             assert!(message.contains(settled.as_str()), "{message}");
         }
+    }
+
+    #[test]
+    fn export_is_allowed_from_open_and_locked_but_not_draft() {
+        assert!(meeting(MeetingStatus::Open).ensure_exportable().is_ok());
+        assert!(meeting(MeetingStatus::Locked).ensure_exportable().is_ok());
+
+        let draft = meeting(MeetingStatus::Draft);
+        let err = draft.ensure_exportable().unwrap_err();
+        assert_eq!(
+            err,
+            DomainError::MeetingNotOpen {
+                meeting_id: draft.id,
+                detected: MeetingStatus::Draft,
+            }
+        );
     }
 
     #[test]

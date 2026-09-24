@@ -158,6 +158,7 @@ pub fn run() {
             commands::get_note_version,
             commands::list_notes_overview,
             commands::generate_remote_form,
+            commands::generate_export,
             commands::remote_submission_from_text,
             commands::preview_remote_submission,
             commands::confirm_remote_submission,

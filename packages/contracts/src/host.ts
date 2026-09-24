@@ -64,7 +64,8 @@ export type AuditAction =
   | 'participant.claim_approved'
   | 'participant.session_revoked'
   | 'note.created'
-  | 'note.updated';
+  | 'note.updated'
+  | 'meeting.exported';
 
 /** What an audit record was about. */
 export type AuditTargetType = 'meeting' | 'participant' | 'session' | 'note';
@@ -550,6 +551,32 @@ export interface RemoteFormGenerated {
   readonly bytes: number;
   /** The note version the form was generated from, or 0. Advisory. */
   readonly source_version: number;
+  readonly generated_at: Iso8601Utc;
+}
+
+/* -------------------------------------------------------------------------
+ * Export (Step 12)
+ * ------------------------------------------------------------------------- */
+
+/** Which of the three Phase 1 export formats was generated. */
+export type ExportFormat = 'markdown' | 'txt' | 'ai_context';
+
+/**
+ * A generated Markdown/TXT/AI Context export, as reported to the Host UI.
+ *
+ * Carries no document content: the file is written by Rust directly and
+ * never crosses this boundary as bytes. `generated_at` exists only here and
+ * in the audit record - never inside the exported file's own content, which
+ * would make two exports of an unchanged meeting differ only in a timestamp.
+ */
+export interface ExportGenerated {
+  readonly meeting_id: MeetingId;
+  readonly format: ExportFormat;
+  /** Absolute path of the file the backend wrote. Chosen by the backend. */
+  readonly path: string;
+  /** Its name alone. A convenience, never an identity (rules section 21). */
+  readonly file_name: string;
+  readonly bytes: number;
   readonly generated_at: Iso8601Utc;
 }
 

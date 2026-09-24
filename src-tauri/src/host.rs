@@ -63,19 +63,21 @@ use std::path::Path;
 use std::sync::Arc;
 
 use app_core::actor::Actor;
+use app_core::authz::{authorize, Operation};
 use app_core::error::DomainError;
 use app_core::event::{EventSink, NoEvents};
 use app_core::id::{MeetingId, ParticipantId, SubmissionId};
 use app_core::meeting::MeetingStatus;
-use app_core::service::{Domain, ImportSubmission, WriteNote};
+use app_core::service::{Domain, ExportFormat, ImportSubmission, WriteNote};
 use app_core::time::UtcTimestamp;
 use app_db::presence::PresenceStore;
-use app_db::query::{HostQueries, SubmissionLedgerState};
+use app_db::query::{HostQueries, MeetingDetail, SubmissionLedgerState};
 use app_db::Db;
+use app_export::{ExportDocument, ExportMeeting, ExportNote, ExportParticipant, ExportTimeline};
 use app_remote::{RemoteFormContext, SubmissionV1};
 
 use crate::dto::{
-    AuditEntryDto, ImportBlockerDto, JoinTokenIssuedDto, LanInterfaceDto,
+    AuditEntryDto, ExportGeneratedDto, ImportBlockerDto, JoinTokenIssuedDto, LanInterfaceDto,
     MeetingConfigurationInput, MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto,
     MeetingTransitionedDto, MeetingUpdatedDto, NoteDetailDto, NoteOverviewDto,
     NoteVersionDetailDto, NoteVersionSummaryDto, NoteWrittenDto, ParticipantAddedDto,
@@ -96,6 +98,14 @@ pub const DATABASE_FILE: &str = "meetings.sqlite3";
 /// is expected to open, attach to an email and eventually delete, and the
 /// database is not (ADR-0021 decision 10).
 pub const REMOTE_FORM_DIRECTORY: &str = "remote-forms";
+
+/// Folder inside the application data directory for generated exports.
+///
+/// Its own directory for the same reason `REMOTE_FORM_DIRECTORY` has one: an
+/// export is a file the Host is expected to open or send elsewhere, not
+/// something that belongs beside the database (Step 12, following ADR-0021
+/// decision 10's precedent).
+pub const EXPORT_DIRECTORY: &str = "exports";
 
 /// Everything a Host command needs.
 pub struct HostState {
@@ -885,6 +895,170 @@ impl HostState {
     }
 
     /* ------------------------------------------------------------------
+     * Export (Step 12)
+     * ------------------------------------------------------------------ */
+
+    /// Render and write a Markdown/TXT/AI Context export of a meeting.
+    ///
+    /// ```text
+    /// check_export_eligible      (read-only: exists, authorized, not DRAFT)
+    ///   -> assemble_export_document   (HostQueries reads; app-export touches none)
+    ///     -> app_export::render_*     (pure; no DB, no filesystem, no auth)
+    ///       -> std::fs::write         (this method; the Tauri boundary)
+    ///         -> Domain::record_export    (re-authorizes, re-checks lifecycle,
+    ///                                       writes exactly one audit row)
+    /// ```
+    ///
+    /// # Two lifecycle checks, on purpose
+    ///
+    /// [`Self::check_export_eligible`] runs first so a `DRAFT` meeting never
+    /// reaches the renderer or the filesystem at all - reusing the same
+    /// courtesy-check shape [`Self::generate_remote_form`] already uses for
+    /// its own `LOCKED` refusal, at the same layer. [`Domain::record_export`]
+    /// re-authorizes and re-checks the lifecycle a second time, inside its
+    /// own transaction, which is what actually *enforces* the rule
+    /// (architecture rules section 15): the lifecycle is monotonic
+    /// (`DRAFT -> OPEN -> LOCKED`, never backward), so a meeting the first
+    /// check found `OPEN` or `LOCKED` cannot have become `DRAFT` again by the
+    /// time the second check runs.
+    ///
+    /// # Filesystem and audit are not atomic
+    ///
+    /// The file is written before the audit row, and the two are not one
+    /// transaction: `std::fs` cannot participate in SQLite's. If the audit
+    /// write fails after a successful file write, the file remains on disk
+    /// and this method reports a persistence error naming that specific case
+    /// (Step 12 design freeze, E-2). No distributed-transaction mechanism is
+    /// introduced to paper over this.
+    pub fn generate_export(
+        &self,
+        meeting_id: &str,
+        format: &str,
+        directory: &Path,
+    ) -> HostResult<ExportGeneratedDto> {
+        let meeting_id = crate::dto::parse_meeting_id(meeting_id)?;
+        let format = crate::dto::parse_export_format(format)?;
+
+        let meeting = self.check_export_eligible(meeting_id)?;
+        let document = self.assemble_export_document(&meeting)?;
+
+        let content = match format {
+            ExportFormat::Markdown => app_export::render_markdown(&document),
+            ExportFormat::Txt => app_export::render_txt(&document),
+            ExportFormat::AiContext => app_export::render_ai_context(&document),
+        };
+
+        let file_name = export_file_name(&meeting.title, format);
+        let path = directory.join(&file_name);
+
+        std::fs::create_dir_all(directory)
+            .map_err(|error| export_write_failed(directory, &error))?;
+        std::fs::write(&path, content.as_bytes())
+            .map_err(|error| export_write_failed(&path, &error))?;
+
+        // The file exists on disk from here on, regardless of what happens
+        // next (see the module doc above).
+        let recorded = self
+            .domain
+            .record_export(&Actor::Host, meeting_id, format)
+            .map_err(|error| export_recorded_failed(&path, error))?;
+
+        Ok(ExportGeneratedDto {
+            meeting_id,
+            format,
+            path: path.display().to_string(),
+            file_name,
+            bytes: content.len() as u64,
+            generated_at: recorded.at,
+        })
+    }
+
+    /// Read-only, cheap gate: the meeting exists, the Host is authorized for
+    /// [`Operation::GenerateExport`], and its status is `OPEN` or `LOCKED`.
+    ///
+    /// Runs entirely on the read pool (`HostQueries`, ADR-0014) - no
+    /// `BEGIN IMMEDIATE`, no write. Exists so a `DRAFT` meeting never reaches
+    /// rendering or the filesystem; [`Domain::record_export`] is what
+    /// actually enforces the rule a second time, inside its own transaction.
+    fn check_export_eligible(&self, meeting_id: MeetingId) -> HostResult<MeetingDetail> {
+        let meeting = self
+            .queries()
+            .meeting(meeting_id)
+            .map_err(query_failed)?
+            .ok_or_else(|| not_found(meeting_id))?;
+
+        authorize(&Actor::Host, meeting_id, Operation::GenerateExport)?;
+
+        if meeting.status == MeetingStatus::Draft {
+            return Err(HostError::from(DomainError::MeetingNotOpen {
+                meeting_id,
+                detected: meeting.status,
+            }));
+        }
+
+        Ok(meeting)
+    }
+
+    /// Project `HostQueries` reads into the pure input `app-export` renders.
+    ///
+    /// The only place Step 12 decides what an export contains: meeting
+    /// metadata, the roster's stable identity fields (never a participant id,
+    /// claim status or session - E-8), each participant's latest note only
+    /// (E-4/E-8), and the bounded created/opened/locked timeline (E-7).
+    fn assemble_export_document(&self, meeting: &MeetingDetail) -> HostResult<ExportDocument> {
+        let queries = self.queries();
+
+        let roster = queries.participants(meeting.id).map_err(query_failed)?;
+        let mut participants = Vec::with_capacity(roster.len());
+        for row in roster {
+            let note = queries
+                .note(meeting.id, row.id)
+                .map_err(query_failed)?
+                .map(|note| ExportNote {
+                    content: note.content,
+                    version: note.version,
+                    last_author_type: note.last_author_type,
+                });
+            participants.push(ExportParticipant {
+                name: row.details.name,
+                department: row.details.department,
+                position: row.details.position,
+                meeting_role: row.details.meeting_role,
+                note,
+            });
+        }
+
+        let opened_at = queries
+            .audit_entries(meeting.id)
+            .map_err(query_failed)?
+            .into_iter()
+            .find(|entry| entry.action == "meeting.opened")
+            .map(|entry| entry.created_at.to_string())
+            .unwrap_or_default();
+
+        Ok(ExportDocument {
+            meeting: ExportMeeting {
+                title: meeting.title.clone(),
+                topic: meeting.topic.clone(),
+                date: meeting.date.to_string(),
+                start_time: meeting.start_time.to_string(),
+                end_time: meeting.end_time.to_string(),
+                timezone: meeting.timezone.clone(),
+                location: meeting.location.clone(),
+                description: meeting.description.clone(),
+                status: meeting.status.to_string(),
+                locked_at: meeting.locked_at.map(|at| at.to_string()),
+            },
+            participants,
+            timeline: ExportTimeline {
+                created_at: meeting.created_at.to_string(),
+                opened_at,
+                locked_at: meeting.locked_at.map(|at| at.to_string()),
+            },
+        })
+    }
+
+    /* ------------------------------------------------------------------
      * Audit
      * ------------------------------------------------------------------ */
 
@@ -999,6 +1173,94 @@ fn remote_form_file_name(
     let tail = &id[id.len() - 12..];
 
     format!("{meeting}-{who}-{tail}.html")
+}
+
+/// A file name for a generated export.
+///
+/// Convenience only, exactly as [`remote_form_file_name`] is: the application
+/// never reads identity from a filename (architecture rules section 21).
+/// Slugified to `[A-Za-z0-9-]` so a hostile meeting title cannot become a
+/// path (Step 12 design freeze, E-6/E-8). The tail of a freshly minted
+/// export id is appended so a second export of the same meeting and format
+/// never overwrites the first - the same reasoning ADR-0021 decision 13
+/// already applied to the remote form, and the same "id tail, not head"
+/// reasoning, since a UUIDv7's head is a timestamp two exports made in the
+/// same minute would share.
+fn export_file_name(meeting_title: &str, format: ExportFormat) -> String {
+    fn slug(text: &str) -> String {
+        let mut out = String::new();
+        let mut pending_dash = false;
+
+        for character in text.chars() {
+            if character.is_ascii_alphanumeric() {
+                if pending_dash && !out.is_empty() {
+                    out.push('-');
+                }
+                pending_dash = false;
+                out.push(character);
+            } else {
+                pending_dash = true;
+            }
+            if out.len() >= 40 {
+                break;
+            }
+        }
+
+        out
+    }
+
+    let meeting = slug(meeting_title);
+    let meeting = if meeting.is_empty() {
+        "meeting"
+    } else {
+        &meeting
+    };
+
+    let id = uuid::Uuid::now_v7().to_string();
+    let tail = &id[id.len() - 12..];
+
+    let extension = match format {
+        ExportFormat::Markdown => "md",
+        ExportFormat::Txt | ExportFormat::AiContext => "txt",
+    };
+
+    format!("{meeting}-{format}-{tail}.{extension}")
+}
+
+/// A file the Host's own machine would not write, met while generating an
+/// export. Distinct wording from [`write_failed`] (which is the remote
+/// form's own message) so a Host is told which feature failed.
+fn export_write_failed(path: &Path, error: &std::io::Error) -> HostError {
+    eprintln!("[host] writing export {}: {error}", path.display());
+    HostError::new(
+        HostErrorKind::Persistence,
+        format!(
+            "The export could not be written to {}. Check that the folder exists and there is room on the disk.",
+            path.display()
+        ),
+    )
+}
+
+/// The export file was written successfully, but recording that it happened
+/// was not.
+///
+/// The file at `path` remains on disk - this is the one accepted non-atomic
+/// edge in Step 12's design (E-2): `std::fs` and SQLite do not share a
+/// transaction, and none is introduced to fake one. The SQLite diagnostic
+/// itself is kept off the UI, exactly as every other persistence failure in
+/// this module already does.
+fn export_recorded_failed(path: &Path, error: DomainError) -> HostError {
+    eprintln!(
+        "[host] the export at {} was written, but recording it failed: {error}",
+        path.display()
+    );
+    HostError::new(
+        HostErrorKind::Persistence,
+        format!(
+            "The export file was written to {}, but recording the export failed. The file is still there.",
+            path.display()
+        ),
+    )
 }
 
 /// The requested meeting does not exist.

@@ -28,6 +28,7 @@ history.
 | [0020](0020-participant-note-editing.md) | Participant note editing over the LAN | Accepted |
 | [0021](0021-remote-form-generation.md) | Remote form generation and the submission artifact | Accepted |
 | [0022](0022-remote-submission-import.md) | Remote submission import | Accepted |
+| [0023](0023-meeting-export.md) | Meeting export: lifecycle, audit and the Rust renderer | Accepted |
 
 Template:
 

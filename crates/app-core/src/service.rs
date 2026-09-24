@@ -194,6 +194,47 @@ pub struct MeetingTransitioned {
     pub at: UtcTimestamp,
 }
 
+/// Which of the three Phase 1 export formats was generated (Step 12).
+///
+/// Stable, snake_case wire form via `as_str`/`Display`, matching every other
+/// small closed vocabulary this crate persists (compare [`MeetingStatus`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportFormat {
+    Markdown,
+    Txt,
+    AiContext,
+}
+
+impl ExportFormat {
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ExportFormat::Markdown => "markdown",
+            ExportFormat::Txt => "txt",
+            ExportFormat::AiContext => "ai_context",
+        }
+    }
+}
+
+impl std::fmt::Display for ExportFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Outcome of recording that an export was generated.
+///
+/// Carries nothing about the rendered document itself - the audit row this
+/// produces is a fact about *that an export happened*, not a copy of it
+/// (Step 12 design freeze, E-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportRecorded {
+    pub meeting_id: MeetingId,
+    pub format: ExportFormat,
+    pub at: UtcTimestamp,
+}
+
 /// Outcome of a note write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NoteWritten {
@@ -916,6 +957,75 @@ impl<D: Database> Domain<D> {
             at: outcome.at,
         });
         Ok(outcome)
+    }
+
+    /// Record that a Host generated an export of a meeting. Host only.
+    ///
+    /// Step 12's one departure from the shape every other mutation here
+    /// follows: there is no entity to write, because export produces a file
+    /// outside this database, not a row inside it. What this method writes
+    /// is the fact that it happened - one `meeting.exported` audit row - and
+    /// nothing else. The rendered bytes never reach this method and never
+    /// reach `audit_logs.metadata`; only which format was rendered does.
+    ///
+    /// This is the actual enforcement point for the `DRAFT` refusal
+    /// (`Meeting::ensure_exportable`), re-read inside this transaction exactly
+    /// as every lifecycle rule in this module is. A caller is expected to
+    /// have already checked eligibility before doing the (potentially
+    /// expensive, and definitely filesystem-touching) work of rendering and
+    /// writing a file, but that earlier check is not what makes `DRAFT`
+    /// refused - this one is (architecture rules section 15; Step 12 design
+    /// freeze, corrected E-2/E-3).
+    ///
+    /// Deliberately publishes no [`DomainEvent`]: nothing in this application
+    /// needs to be told an export happened - not a LAN participant, and not
+    /// a second Host window, since there is only ever one (Step 12 design
+    /// freeze, E-2's rejected alternatives).
+    ///
+    /// The filesystem write this audit row records is **not** atomic with
+    /// this transaction: `std::fs` cannot participate in a SQLite
+    /// transaction, and no distributed-transaction mechanism is introduced
+    /// to fake one. The caller is expected to call this only after the file
+    /// has already been written successfully; if this call then fails, the
+    /// file remains on disk without a matching audit row, which is an
+    /// accepted, documented non-atomic edge (Step 12 design freeze, E-2).
+    pub fn record_export(
+        &self,
+        actor: &Actor,
+        meeting_id: MeetingId,
+        format: ExportFormat,
+    ) -> DomainResult<ExportRecorded> {
+        let mut outcome = None;
+
+        self.db.transaction(&mut |tx: &dyn DomainTx| {
+            let meeting = tx
+                .find_meeting(meeting_id)?
+                .ok_or(DomainError::MeetingNotFound { meeting_id })?;
+
+            let proof = authorize(actor, meeting_id, Operation::GenerateExport)?;
+
+            meeting.ensure_exportable()?;
+
+            let at = UtcTimestamp::now();
+            tx.insert_audit(
+                &proof,
+                &AuditEntry {
+                    action: AuditAction::MeetingExported,
+                    target: AuditTarget::Meeting(meeting_id),
+                    metadata: json!({ "format": format.as_str() }),
+                    at,
+                },
+            )?;
+
+            outcome = Some(ExportRecorded {
+                meeting_id,
+                format,
+                at,
+            });
+            Ok(())
+        })?;
+
+        committed(outcome, "recording an export")
     }
 
     fn transition(

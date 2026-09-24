@@ -19,8 +19,9 @@ Everything is stored in a local SQLite database on the Host device.
 > cannot reach the network, the Host generates a single offline HTML form that
 > the participant fills in and exports as a submission file, and the Host
 > reads it back into that participant's note. The Host can lock a meeting,
-> ending editing for everyone with no way back. Note links and export are not
-> implemented yet. See [Roadmap](#roadmap).
+> ending editing for everyone with no way back, and can export the meeting
+> record as Markdown, TXT or AI Context. Note links are not implemented yet;
+> PDF export is deferred to Phase 2. See [Roadmap](#roadmap).
 
 ## How it works
 
@@ -133,8 +134,8 @@ Phase 1 is built in order, each step independently demonstrable:
 8B. Participant note editing over the LAN
 9. Remote form generation
 10. Remote submission import pipeline
-11. Meeting lock *(current)*
-12. Export: Markdown and TXT / AI Context
+11. Meeting lock
+12. Export: Markdown and TXT / AI Context *(current)*
 
 PDF export is Phase 2 by decision - see
 [ADR-0004](docs/adr/0004-defer-pdf-export.md).

@@ -9,6 +9,15 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-app-core = { workspace = true }
-app-db = { workspace = true }
-thiserror = { workspace = true }
+# This crate is a pure rendering layer: every renderer is a function from
+# plain data to a `String`, and rendering never fails (input has already
+# been validated by `app_core::note` before it arrives here). It therefore
+# needs no dependency on `app-core`, `app-db`, or an error-handling crate -
+# not depending on them is what makes "app-export cannot reach into
+# HostQueries or open the database" true by construction rather than by
+# convention.
+
+[dev-dependencies]
+# For the shared golden-fixture cross-check against
+# `packages/editor/__fixtures__/notes.json` (E-4).
+serde_json = { workspace = true }

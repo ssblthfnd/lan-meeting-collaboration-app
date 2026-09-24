@@ -35,6 +35,10 @@ thiserror = { workspace = true }
 tauri = { version = "2", features = [] }
 tokio = { workspace = true }
 qrcode = { workspace = true }
+# For a filename-disambiguation tail only (Step 12 export naming) - already a
+# workspace dependency used throughout `app-core` for entity identifiers, so
+# this adds no new crate to the dependency set ADR-0006 governs.
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

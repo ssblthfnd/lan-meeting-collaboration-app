@@ -15,16 +15,16 @@ use tauri::Manager;
 use tauri::State;
 
 use crate::dto::{
-    AuditEntryDto, JoinTokenIssuedDto, LanInterfaceDto, MeetingConfigurationInput,
-    MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto, MeetingTransitionedDto,
-    MeetingUpdatedDto, NoteDetailDto, NoteOverviewDto, NoteVersionDetailDto, NoteVersionSummaryDto,
-    NoteWrittenDto, ParticipantAddedDto, ParticipantDetailsInput, ParticipantPresenceDto,
-    ParticipantRemovedDto, ParticipantSummaryDto, ParticipantUpdatedDto, PendingSubmissionDto,
-    RemoteFormGeneratedDto, RemoteSubmissionImportedDto, RemoteSubmissionPreviewDto,
-    SessionChangedDto,
+    AuditEntryDto, ExportGeneratedDto, JoinTokenIssuedDto, LanInterfaceDto,
+    MeetingConfigurationInput, MeetingCreatedDto, MeetingDetailDto, MeetingSummaryDto,
+    MeetingTransitionedDto, MeetingUpdatedDto, NoteDetailDto, NoteOverviewDto,
+    NoteVersionDetailDto, NoteVersionSummaryDto, NoteWrittenDto, ParticipantAddedDto,
+    ParticipantDetailsInput, ParticipantPresenceDto, ParticipantRemovedDto, ParticipantSummaryDto,
+    ParticipantUpdatedDto, PendingSubmissionDto, RemoteFormGeneratedDto,
+    RemoteSubmissionImportedDto, RemoteSubmissionPreviewDto, SessionChangedDto,
 };
 use crate::error::{HostError, HostErrorKind, HostResult};
-use crate::host::{HostState, REMOTE_FORM_DIRECTORY};
+use crate::host::{HostState, EXPORT_DIRECTORY, REMOTE_FORM_DIRECTORY};
 use crate::lan::{LanLifecycle, LanServerStatus};
 use crate::remote_import::PendingImport;
 
@@ -284,6 +284,37 @@ pub fn generate_remote_form(
         .join(REMOTE_FORM_DIRECTORY);
 
     state.generate_remote_form(&meeting_id, &participant_id, &directory)
+}
+
+/* -------------------------------------------------------------------------
+ * Export (Step 12)
+ *
+ * One command for all three formats: the format string picks the renderer,
+ * exactly as `format` does inside `HostState::generate_export`. No filesystem
+ * path crosses the boundary in either direction beyond the resulting file's
+ * absolute path in the response, mirroring `generate_remote_form`.
+ * ------------------------------------------------------------------------- */
+
+#[tauri::command(rename_all = "snake_case")]
+pub fn generate_export(
+    app: tauri::AppHandle,
+    state: State<'_, HostState>,
+    meeting_id: String,
+    format: String,
+) -> HostResult<ExportGeneratedDto> {
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| {
+            eprintln!("[host] resolving the application data directory: {error}");
+            HostError::new(
+                HostErrorKind::Persistence,
+                "This installation has no application data folder to write into.".to_owned(),
+            )
+        })?
+        .join(EXPORT_DIRECTORY);
+
+    state.generate_export(&meeting_id, &format, &directory)
 }
 
 /* -------------------------------------------------------------------------

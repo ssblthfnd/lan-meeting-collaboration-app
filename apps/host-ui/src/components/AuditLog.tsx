@@ -32,6 +32,7 @@ const DESCRIPTION: Record<AuditAction, string> = {
   'participant.session_revoked': 'Name released by host',
   'note.created': 'Note created',
   'note.updated': 'Note changed',
+  'meeting.exported': 'Meeting exported',
 };
 
 /** Who acted. `HOST` carries no participant id, by constraint (ADR-0008). */

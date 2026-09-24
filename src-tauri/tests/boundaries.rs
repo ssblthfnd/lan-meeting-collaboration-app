@@ -296,7 +296,7 @@ fn every_registered_command_is_reachable_from_the_host_ui_gateway() {
 
     assert_eq!(
         registered.len(),
-        29,
+        30,
         "every registered command must be reachable, found {registered:?}"
     );
 

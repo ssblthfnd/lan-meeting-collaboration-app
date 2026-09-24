@@ -24,8 +24,8 @@ use app_core::id::{Entity, Id, MeetingId, NoteId, ParticipantId, SubmissionId};
 use app_core::meeting::{MeetingConfiguration, MeetingStatus};
 use app_core::participant::ParticipantDetails;
 use app_core::service::{
-    MeetingCreated, MeetingTransitioned, MeetingUpdated, NoteWritten, ParticipantAdded,
-    ParticipantRemoved, ParticipantUpdated, SessionChanged,
+    ExportFormat, MeetingCreated, MeetingTransitioned, MeetingUpdated, NoteWritten,
+    ParticipantAdded, ParticipantRemoved, ParticipantUpdated, SessionChanged,
 };
 use app_core::time::{MeetingDate, MeetingTime, MeetingTimeZone, UtcTimestamp};
 use app_db::query::{AuditEntryView, MeetingDetail, MeetingSummary, ParticipantSummary};
@@ -406,6 +406,41 @@ pub struct RemoteFormGeneratedDto {
     /// had written nothing. Advisory (ADR-0021 decision 9).
     pub source_version: i64,
     pub generated_at: UtcTimestamp,
+}
+
+/// A generated Markdown/TXT/AI Context export, as reported to the Host UI.
+///
+/// Carries no document content - the file is written by Rust directly, never
+/// crossing the IPC boundary as bytes (Step 12 design freeze, Decision 9).
+/// `generated_at` exists here and only here: it is never embedded in the
+/// exported file's own content, which would make otherwise-identical exports
+/// differ only in a timestamp (E-5).
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportGeneratedDto {
+    pub meeting_id: MeetingId,
+    pub format: ExportFormat,
+    /// Absolute path of the file that was written.
+    pub path: String,
+    /// Its name alone, which is a convenience and never an identity
+    /// (architecture rules section 21).
+    pub file_name: String,
+    /// Size in bytes, so the Host can see at a glance that a real file landed.
+    pub bytes: u64,
+    pub generated_at: UtcTimestamp,
+}
+
+/// Parse an export format request.
+pub fn parse_export_format(text: &str) -> HostResult<ExportFormat> {
+    match text {
+        "markdown" => Ok(ExportFormat::Markdown),
+        "txt" => Ok(ExportFormat::Txt),
+        "ai_context" => Ok(ExportFormat::AiContext),
+        _ => Err(HostError::validation(
+            "export format",
+            "one of markdown, txt, ai_context",
+            text,
+        )),
+    }
 }
 
 /// Why a pending submission cannot be imported, if it cannot.

@@ -5,6 +5,7 @@ import * as hostApi from '../api/hostApi';
 import { useQuery } from '../hooks/useQuery';
 import { AuditLog } from './AuditLog';
 import { ErrorNotice } from './ErrorNotice';
+import { ExportPanel } from './ExportPanel';
 import { ImportSubmissionPanel } from './ImportSubmissionPanel';
 import { JoinPanel } from './JoinPanel';
 import { MeetingForm } from './MeetingForm';
@@ -19,7 +20,14 @@ import { StatusBadge, statusDescription } from './StatusBadge';
  * decides for itself. Everything else it shows comes from the backend, and every
  * action it offers is re-judged there.
  */
-type Section = 'configuration' | 'participants' | 'access' | 'notes' | 'remote' | 'audit';
+type Section =
+  | 'configuration'
+  | 'participants'
+  | 'access'
+  | 'notes'
+  | 'remote'
+  | 'export'
+  | 'audit';
 
 export function MeetingDetailView({
   meetingId,
@@ -125,7 +133,7 @@ export function MeetingDetailView({
 
       <nav className="tabs">
         {(
-          ['configuration', 'participants', 'access', 'notes', 'remote', 'audit'] as const
+          ['configuration', 'participants', 'access', 'notes', 'remote', 'export', 'audit'] as const
         ).map((name) => (
           <button
             key={name}
@@ -138,6 +146,7 @@ export function MeetingDetailView({
             {name === 'access' && 'LAN access'}
             {name === 'notes' && 'Notes'}
             {name === 'remote' && 'Remote'}
+            {name === 'export' && 'Export'}
             {name === 'audit' && 'Audit'}
           </button>
         ))}
@@ -295,6 +304,8 @@ export function MeetingDetailView({
       {section === 'remote' && (
         <ImportSubmissionPanel meeting={detail} onImported={refresh} />
       )}
+
+      {section === 'export' && <ExportPanel meeting={detail} />}
 
       {section === 'audit' && <AuditLog meetingId={meetingId} />}
     </>
