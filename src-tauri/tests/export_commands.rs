@@ -56,6 +56,25 @@ impl Host {
         (meeting_id, participant_id)
     }
 
+    /// An opened meeting whose roster is exactly `names`, added in the given
+    /// order while still `DRAFT` (the roster is only ever settled before a
+    /// meeting opens - ADR-0013).
+    fn open_with_roster(&self, names: &[&str]) -> (String, Vec<String>) {
+        let meeting_id = self.draft();
+        let participant_ids = names
+            .iter()
+            .map(|name| {
+                self.state
+                    .add_participant(&meeting_id, details(name))
+                    .expect("add")
+                    .participant_id
+                    .to_storage()
+            })
+            .collect();
+        self.state.open_meeting(&meeting_id).expect("open");
+        (meeting_id, participant_ids)
+    }
+
     fn export_file_count(&self) -> usize {
         match std::fs::read_dir(self.output()) {
             Ok(entries) => entries.count(),
@@ -379,4 +398,152 @@ fn a_remote_import_actor_cannot_generate_an_export() {
         }
     ));
     assert_eq!(host.exported_audit_rows(&meeting_id), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle interleaving (frozen design: two independent checks)
+// ---------------------------------------------------------------------------
+
+/// Proves the two-check design's actual claim: a meeting the eligibility
+/// check found `OPEN` can transition to `LOCKED` before the second,
+/// authoritative check runs, and that second check must still succeed -
+/// because `Domain::record_export` (via `Meeting::ensure_exportable`)
+/// accepts `LOCKED` exactly as it accepts `OPEN`.
+///
+/// `HostState::check_export_eligible` is a private method, so this test
+/// cannot call it directly without adding a test-only seam to production
+/// code, which is out of scope for this pass (per instruction: do not modify
+/// production code merely to make a test easier). It instead reconstructs
+/// the exact two checks that method performs, using only public production
+/// APIs:
+///
+/// - the meeting-status half, via the real `HostState::get_meeting` (the
+///   same `HostQueries` read path `check_export_eligible` itself uses);
+/// - the authorization half, via the real, public `app_core::authz::
+///   authorize` free function `check_export_eligible` calls verbatim.
+///
+/// Between that reconstructed "stage 1" and the real "stage 2"
+/// (`Domain::record_export`, called through the public `HostState::domain()`
+/// exactly as the `RemoteImport` authorization test above already does), the
+/// meeting is locked through the real command path
+/// (`HostState::lock_meeting`) - the one legal transition the lifecycle
+/// permits between the two stages. This is not a fake lifecycle transition:
+/// it is the real, only transition `OPEN` can ever make.
+#[test]
+fn a_meeting_locked_between_the_two_checks_still_exports() {
+    let host = Host::new();
+    let (meeting_id, _) = host.open();
+    let parsed = app_core::id::MeetingId::parse(&meeting_id).unwrap();
+
+    // Stage 1, reconstructed: the meeting is found, OPEN, and the Host is
+    // authorized for `GenerateExport` - exactly what `check_export_eligible`
+    // itself checks, using the same public primitives it uses internally.
+    let detail_before = host.state.get_meeting(&meeting_id).unwrap();
+    assert_eq!(detail_before.status.as_str(), "OPEN");
+    app_core::authz::authorize(
+        &app_core::actor::Actor::Host,
+        parsed,
+        app_core::authz::Operation::GenerateExport,
+    )
+    .expect("the real authorize() must accept Host for GenerateExport while OPEN");
+
+    // The meeting changes state between the two checks.
+    host.state.lock_meeting(&meeting_id).unwrap();
+
+    // Stage 2: the real, authoritative check must still succeed against the
+    // now-`LOCKED` meeting.
+    let recorded = host
+        .state
+        .domain()
+        .record_export(
+            &app_core::actor::Actor::Host,
+            parsed,
+            app_core::service::ExportFormat::Markdown,
+        )
+        .expect("record_export must still succeed against the now-LOCKED meeting");
+
+    assert_eq!(recorded.meeting_id, parsed);
+    assert_eq!(recorded.format, app_core::service::ExportFormat::Markdown);
+    assert_eq!(host.exported_audit_rows(&meeting_id), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem write failure
+// ---------------------------------------------------------------------------
+
+/// The same technique `remote_commands.rs::an_unwritable_directory_is_
+/// reported_as_the_hosts_own_problem` already uses: a regular file sits
+/// where the output directory should be, so `std::fs::create_dir_all` cannot
+/// succeed. Eligibility and rendering both complete first (rendering is
+/// pure, in-memory, and happens before any filesystem call), so this
+/// specifically exercises the filesystem-write failure path, distinct from
+/// every lifecycle/authorization refusal tested elsewhere in this file.
+#[test]
+fn an_unwritable_directory_is_reported_as_the_hosts_own_problem() {
+    let host = Host::new();
+    let (meeting_id, _) = host.open();
+
+    // A file where the directory should be.
+    let blocked = host.dir.path().join("blocked");
+    std::fs::write(&blocked, b"not a directory").expect("write the blocker");
+
+    let error = host
+        .state
+        .generate_export(&meeting_id, "markdown", &blocked)
+        .unwrap_err();
+
+    assert!(
+        matches!(error.kind, HostErrorKind::Persistence),
+        "{error:?}"
+    );
+    assert_eq!(error.category, ErrorCategory::Unexpected);
+    // The Host is told where, because it is their own machine.
+    assert!(error.message.contains("blocked"), "{}", error.message);
+
+    // Nothing was recorded: the write never happened, so there is nothing to
+    // record an export of.
+    assert_eq!(host.exported_audit_rows(&meeting_id), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Ordering
+// ---------------------------------------------------------------------------
+
+/// Roster order in the export must be `name ASC, id ASC` - the same order
+/// `HostQueries::participants` already guarantees and every other Host UI
+/// roster view already relies on - and never insertion order. Participant
+/// ids themselves must never appear in the rendered document (E-8).
+#[test]
+fn participants_are_exported_in_name_then_id_order_and_ids_are_never_rendered() {
+    let host = Host::new();
+    // Inserted deliberately out of alphabetical order.
+    let (meeting_id, participant_ids) =
+        host.open_with_roster(&["Siti Rahayu", "Ahmad Fauzi", "Budi Santoso"]);
+
+    let result = host
+        .state
+        .generate_export(&meeting_id, "markdown", &host.output())
+        .unwrap();
+    let content = std::fs::read_to_string(&result.path).unwrap();
+
+    let position = |needle: &str| {
+        content
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} not found in:\n{content}"))
+    };
+    let ahmad = position("Ahmad Fauzi");
+    let budi = position("Budi Santoso");
+    let siti = position("Siti Rahayu");
+
+    assert!(
+        ahmad < budi && budi < siti,
+        "participants must appear in name order (Ahmad, Budi, Siti), got:\n{content}"
+    );
+
+    for id in &participant_ids {
+        assert!(
+            !content.contains(id.as_str()),
+            "participant id {id} must never appear in the rendered document"
+        );
+    }
 }
